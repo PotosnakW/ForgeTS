@@ -1,0 +1,20 @@
+ipykernel
+ipywidgets
+matplotlib
+notebook
+numpy==1.25.2
+pandas
+python-dotenv
+scikit_learn
+scipy
+statsmodels
+wandb
+
+# Packages with stricter version control
+huggingface-hub==0.24.0
+torch==2.0.1
+transformers==4.33.3
+rotary-embedding-torch==0.8.6
+
+# NVIDIA Management Library (for GPU monitoring)
+pynvml

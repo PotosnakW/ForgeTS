@@ -1,0 +1,36 @@
+# Model configuration
+model_name: MOMENT  # One of MOMENT or InfiniMOMENT
+d_model: 256  # Dimension of the model, should be 256 for T5-tiny
+transformer_backbone: google/t5-efficient-tiny  # Transformer backbone to use, e.g., google/t5-efficient-tiny
+randomly_initialize_backbone: True  # Whether to randomly initialize the transformer backbone or not.
+torch_dtype: "float32"
+
+seq_len: 512  # Context length of the model. The maximum length of time series that can be processed by the model.
+add_positional_embedding: True  # Whether to add absolute sinusoidal positional embeddings.
+has_relative_attention_bias: True  # Whether to use relative attention bias in the transformer layers. This is typically True for T5 models.
+
+# ICM variants
+channel_mixing_method: 'none'
+layerwise_beta: False
+use_rope: False # True is not support yet
+output_type: 'univariate'
+
+# Training configuration`
+train_batch_size: 64
+val_batch_size: 64
+max_opt_steps: 50000  # Number of pre-training optimization steps.
+max_epochs: 2  # Number of epochs for pretraining.
+# apply_channel_folding: True  # Whether to apply channel folding for univariate data. This is typically used for univariate time series to reduce the number of channels.
+# num_channels_folding: 1  # Maximum number of multivariate channels in a multivariate dataset when using channel folding. 
+
+# Logging & checkpointing
+log_interval: 10000  # Interval for logging training progress
+checkpoint_interval: 10000  # Interval for saving model checkpoints during training.
+
+# Datasets configuration
+datasets_fraction: 1.0  # Fraction of the dataset to use for pretraining. Set to 1.0 to use the entire dataset.
+
+# Legacy configurations
+# multi_chanel_encoder_prefix: multi_channel
+run_name: moment_tiny
+# pretraining_run_name: "pr/etrain_moment_t5_tiny_univariate_channel_folding_1_2epochs_256_bs_2048_08_09_efficient" # "fast-pyramid-63" "fearless-planet-52"

@@ -1,0 +1,80 @@
+# ══════════════════════════════════════════════════════════════
+# dataset_config.yaml  —  Dataset paths & per-dataset parameters
+# ══════════════════════════════════════════════════════════════
+#
+# REQUIRED FIELDS (every entry in every split)
+# ─────────────────────────────────────────────
+#   path             : file path (.parquet or .csv)
+#   name             : human-readable tag for logs and metric keys
+#   horizon          : forecast steps for THIS dataset
+#   val_size         : integer timesteps → validation split
+#   test_size        : integer timesteps → test split
+#   hist_exog_cols   : columns observed only in the past
+#   futr_exog_cols   : columns known in past AND future horizon
+#   stat_exog_cols   : time-invariant per series (use [] if none)
+#
+# SPLIT LAYOUT (oldest → newest)
+# ────────────────────────────────
+#   │◄──── train ────►│◄── val ──►│◄── test ──►│
+#
+# All channels within a file are cut at the same timestamp boundary.
+#
+# HORIZON GROUPING
+# ─────────────────
+# At training time, datasets are automatically grouped by horizon.
+# Datasets with the same horizon value are pooled together and can
+# appear in the same batch. Datasets with different horizons are
+# always in separate batches — no padding, no masking.
+#
+# TRAIN-ONLY FIELDS
+# ──────────────────
+#   weight : relative sampling probability within a horizon group.
+#            Higher weight → drawn more often. Default 1.
+#
+# VAL/TEST-ONLY FIELDS
+# ─────────────────────
+#   use_context_head : prepend the last `context_length` rows of the
+#                      training split so the encoder sees a full window
+#                      from the very first eval timestep. Default false.
+
+# -----------------------------------------------------------
+# ---------------------- Train datasets ---------------------
+# -----------------------------------------------------------
+train:
+  - path: "../datasets/simglucose_90_days.csv"
+    name: "simglucose"
+    horizon: 6
+    val_size: 2592 # 9 days (10% of data)
+    test_size: 2592 # 9 days (10% of data)
+    weight: 1
+    hist_exog_cols: [CHO, insulin]
+    futr_exog_cols: []
+    #stat_exog_cols: [region_id, store_type] # TODO @wpotosna
+
+# -----------------------------------------------------------
+# ------------------- Validation datasets -------------------
+# -----------------------------------------------------------
+validation:
+  - path: "../datasets/simglucose_90_days.csv"
+    name: "simglucose"
+    horizon: 6
+    val_size: 2592 # 9 days (10% of data)
+    test_size: 2592 # 9 days (10% of data)
+    weight: 1
+    hist_exog_cols: [CHO, insulin]
+    futr_exog_cols: []
+    #stat_exog_cols: [region_id, store_type] # TODO @wpotosna
+
+# -----------------------------------------------------------
+# ---------------------- Test datasets ----------------------
+# -----------------------------------------------------------
+test:
+  - path: "../datasets/simglucose_90_days.csv"
+    name: "simglucose"
+    horizon: 6
+    val_size: 2592 # 9 days (10% of data)
+    test_size: 2592 # 9 days (10% of data)
+    weight: 1
+    hist_exog_cols: [CHO, insulin]
+    futr_exog_cols: []
+    #stat_exog_cols: [region_id, store_type] # TODO @wpotosna

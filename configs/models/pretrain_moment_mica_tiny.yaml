@@ -1,0 +1,76 @@
+notes: "Pre-training run"
+# Randomness
+random_seed: 13
+
+# Task
+task_name: "pre-training"
+
+# Model configuration
+model_name: "InfiniMOMENT"
+d_model: null  # Dimension of the model, should be 256 for T5-tiny
+transformer_backbone: google/t5-efficient-tiny  # Transformer backbone to use, e.g., google/t5-efficient-tiny
+randomly_initialize_backbone: True  # Whether to randomly initialize the transformer backbone or not.
+torch_dtype: "float32" # "bfloat16"
+
+# Model parameters
+seq_len: 256
+patch_len: 8
+patch_stride_len: 8
+revin_affine: False
+dropout: 0.1
+value_embedding_bias: False # Whether to add biases to the value embeddings
+orth_gain: 1.41
+add_positional_embedding: True # Wheter to add positional embedding to the input
+set_input_mask: True # Whether to set the input mask
+transformer_backbone: 'patchtst'
+res_attention: True
+
+# Logging
+log_interval:  5000
+checkpoint_interval: 5000
+debug: False
+
+# Training configuration
+train_batch_size: 64
+val_batch_size: 64
+pretraining_opt_steps: 50000  # Number of pretraining optimization steps.
+max_epochs: 2  # Number of epochs for pretraining.
+apply_channel_folding: True  # Whether to apply channel folding for univariate data. This is typically used for univariate time series to reduce the number of channels.
+num_channels_folding: 4  # Maximum number of multivariate channels in a multivariate dataset when using channel folding. 
+init_lr: 0.0001 # 1e-4
+beta_lr: 0.05 # 1e-1
+min_lr: 0.00001 # 1e-5
+
+# Training parameters
+mask_ratio: 0.3
+optimizer_name : "AdamW"
+enable_gradient_checkpointing: True
+max_norm: 5
+
+weight_decay: 0.05
+lr_scheduler_type: 'linearwarmupcosinelr'
+lr_decay_rate: 0.9
+warmup_lr: 0.00001 # 1e-5
+warmup_steps: 1000
+use_amp: True
+max_opt_steps: 500000
+
+# Datasets configuration
+datasets_fraction: 1.0  # Fraction of the dataset to use for pretraining. Set to 1.0 to use the entire dataset.
+
+# Dataset parameters
+target_col: 'unique_id'
+hist_exog_col: None
+futr_exog_col: None
+stat_exog_col: None
+scale : True
+shuffle : True
+num_workers : 1
+pin_memory : True
+drop_last : False
+has_relative_attention_bias: True
+output_type: 'multivariate'
+apply_static_channel_embeddings: False
+randomize_static_channel_embeddings: False
+multivariate: True
+run_name: "pretrain_moment_t5_tiny_infini"

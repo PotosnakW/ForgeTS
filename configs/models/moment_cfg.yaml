@@ -1,0 +1,9 @@
+# Model configuration
+d_model: 256  # Dimension of the model, should be 256 for T5-tiny
+transformer_backbone: google/t5-efficient-tiny  # Transformer backbone to use, e.g., google/t5-efficient-tiny
+torch_dtype: "float32"
+pos_enc: 'sincos'
+
+# ICM variants
+channel_mixing_method: 'none'
+layerwise_beta: False

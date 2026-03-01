@@ -1,0 +1,60 @@
+# ══════════════════════════════════════════════════════════════
+# model_config.yaml  —  Model & training hyper-parameters
+# ══════════════════════════════════════════════════════════════
+#
+# Contains ONLY parameters that belong to the model or training loop —
+# the same regardless of which dataset is loaded.
+#
+# All dataset-specific parameters (horizon, val_size, test_size,
+# hist/futr/stat_exog_cols) live in dataset_config.yaml.
+
+# ── Encoder window ────────────────────────────────────────────
+# Same for all datasets — an architecture decision.
+context_length: 512
+
+# ── Batch mode ────────────────────────────────────────────────
+# dataset_specific : all channels (unique_ids) share the SAME time
+#                    window → [B, context_length, C, V]
+# mixed            : each (series, window) pair is independent
+#                    → [B, context_length, 1, V]
+batch_mode: "dataset_specific"
+
+# ── Multi-dataset mixing (train only) ─────────────────────────
+# Datasets are grouped by horizon. Within a group, multiple datasets
+# are pooled and sampled together (weighted by each entry's `weight`).
+#
+# concat      : batches drawn via WeightedRandomSampler within each
+#               horizon group; horizon groups interleaved proportionally
+#               to their total weight.
+#
+# round_robin : one batch per horizon group per cycle in strict rotation.
+#               Equal group representation regardless of dataset sizes.
+#
+# In both modes every batch is guaranteed to contain only samples
+# sharing the same horizon — no padding or masking required.
+mixing_strategy: "concat"   # "concat" | "round_robin"
+
+# ── DataLoader knobs ──────────────────────────────────────────
+batch_size: 32
+valid_batch_size: 1024
+num_workers: 4
+drop_last: false
+
+# ── Normalisation ─────────────────────────────────────────────
+normalize: true     # per-channel z-score, fit on training portion only
+
+# ── Training ──────────────────────────────────────────────────
+max_epochs: 100
+learning_rate: 1.0e-3
+gradient_clip_val: 1.0
+early_stopping_patience: 10
+
+# ── Checkpointing ─────────────────────────────────────────────
+checkpoint_dir: "checkpoints/"
+save_top_k: 3
+monitor_metric: "val_loss"
+monitor_mode: "min"
+
+# # Logging & checkpointing
+# log_interval: 10000  # Interval for logging training progress
+# checkpoint_interval: 10000  # Interval for saving model checkpoints during training.

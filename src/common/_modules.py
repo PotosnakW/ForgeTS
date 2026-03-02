@@ -56,7 +56,6 @@ class RevIN(nn.Module):
 
     def __init__(
         self,
-        num_features: int,
         eps=1e-5,
         affine=False,
         subtract_last=False,
@@ -71,7 +70,6 @@ class RevIN(nn.Module):
         :param non_norm: if True, no normalization performed.
         """
         super(RevIN, self).__init__()
-        self.num_features = num_features
         self.eps = eps
         self.affine = affine
         self.subtract_last = subtract_last
@@ -134,11 +132,10 @@ class Flatten_Head(nn.Module):
     """
     Flatten_Head
     """
-    def __init__(self, multivariate_head, n_vars, nf, h, c_out, head_dropout=0):
+    def __init__(self, multivariate_head, nf, h, c_out, head_dropout=0):
         super().__init__()
 
         self.multivariate_head = multivariate_head
-        self.n_vars = n_vars
         self.c_out = c_out
 
         if self.multivariate_head:
@@ -154,10 +151,11 @@ class Flatten_Head(nn.Module):
             self.linear = nn.Linear(nf, h * c_out)
             self.dropout = nn.Dropout(head_dropout)
 
-    def forward(self, x):  # x: [bs x nvars x hidden_size x patch_num]
+    def forward(self, x):  # x: [bs x n_channels x hidden_size x patch_num]
+        n_channels = x.shape[1]
         if self.multivariate_head:
             x_out = []
-            for i in range(self.n_vars):
+            for i in range(n_channels):
                 z = self.flattens[i](x[:, i, :, :])  # z: [bs x hidden_size * patch_num]
                 z = self.linears[i](z)  # z: [bs x h]
                 z = self.dropouts[i](z)

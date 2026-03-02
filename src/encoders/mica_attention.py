@@ -125,10 +125,7 @@ class InfiniScaledDotProductAttention(ScaledDotProductAttention):
             if beta is not None:
                 self.beta = beta
             else:
-                if config.channelwise_beta:
-                    self.beta = nn.Parameter(torch.rand((1, config.n_series, config.n_heads, 1, 1))*1e-2)
-                else:
-                    self.beta = nn.Parameter(torch.rand((1, 1, config.n_heads, 1, 1))*1e-2)
+                self.beta = nn.Parameter(torch.rand((1, 1, config.n_heads, 1, 1))*1e-2)
                 # Center values around 0
                 with torch.no_grad():
                     self.beta -= self.beta.mean(dim=2, keepdim=True)

@@ -254,10 +254,7 @@ class T5InfiniAttention(T5Attention):
             if beta is not None:
                 self.beta = beta
             else:
-                if config.channelwise_beta:
-                    self.beta = nn.Parameter(torch.rand((1, config.n_channels, config.num_heads, 1, 1))*1e-2)
-                else:
-                    self.beta = nn.Parameter(torch.rand((1, 1, config.num_heads, 1, 1))*1e-2)
+                self.beta = nn.Parameter(torch.rand((1, 1, config.num_heads, 1, 1))*1e-2)
                 # Center values around 0
                 with torch.no_grad():
                     self.beta -= self.beta.mean(dim=2, keepdim=True)
@@ -722,13 +719,9 @@ class T5Stack(T5Stack):
             if config.layerwise_beta:
                 beta = None
             else:
-                n_channels = config.n_channels
                 n_heads = config.num_heads
                 # Create a layer-specific beta
-                if config.channelwise_beta:
-                    beta = nn.Parameter(torch.rand((1, n_channels, n_heads, 1, 1))*1e-2)
-                else:
-                    beta = nn.Parameter(torch.rand((1, 1, n_heads, 1, 1))*1e-2)
+                beta = nn.Parameter(torch.rand((1, 1, n_heads, 1, 1))*1e-2)
                 # Center values around 0
                 with torch.no_grad():
                     beta -= beta.mean(dim=2, keepdim=True)

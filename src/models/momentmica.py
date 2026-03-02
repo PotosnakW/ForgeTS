@@ -48,12 +48,15 @@ class Encoder(nn.Module):
     def _get_huggingface_transformer(self, config):
         model_config = T5Config.from_pretrained(config.transformer_backbone)
         for attr in [
-            "infini_mixer_type", "infini_channel_exclusion", "layerwise_beta",
-            "channelwise_beta", "mlpmixer_hidden_size", "mlpmixer_n_layers",
+            "infini_mixer_type", 
+            "infini_channel_exclusion",
+            "layerwise_beta",
+            "channelwise_beta",
+            "mlpmixer_hidden_size",
+            "mlpmixer_n_layers",
             "mlpmixer_dropout",
         ]:
             setattr(model_config, attr, getattr(config, attr))
-        setattr(model_config, "n_channels", config.n_channels)
         transformer = T5Model(model_config)
         logger.info(f"Randomly initializing {config.transformer_backbone} ({T5Model.__name__}).")
         return transformer.get_encoder()
@@ -105,13 +108,13 @@ class Encoder(nn.Module):
             inputs_embeds  = x_enc,
             attention_mask = attention_mask,
         )
-        enc_out = outputs.last_hidden_state        # [B*C, n_patch, d_model]
+        enc_out = outputs.last_hidden_state  # [B*C, n_patch, d_model]
 
         return enc_out.reshape(
             batch_size, n_channels, n_patch, self.hidden_size
-        )                                          # [B, C, n_patch, d_model]
+        ) # [B, C, n_patch, d_model]
 
-class Decoder(nn.Module):                         # FIX: colon, nn.Module
+class Decoder(nn.Module):
     def __init__(self, config):
         super().__init__()
 
@@ -120,7 +123,6 @@ class Decoder(nn.Module):                         # FIX: colon, nn.Module
 
         self.forecast_head = Flatten_Head(
             multivariate_head = config.multivariate_head,
-            n_vars = config.n_channels,
             nf = config.hidden_size * patch_num_inp,
             h = config.h,
             c_out = config.c_out,
@@ -138,7 +140,7 @@ class Decoder(nn.Module):                         # FIX: colon, nn.Module
         returns : [B, C, 1, H*c_out]   T=1 so forward is identical for both modes
         """
         B, C = enc_out.shape[:2]
-        flat = enc_out.reshape(B, C, -1)           # [B, C, P_std*d_model]
+        flat = enc_out.reshape(B, C, -1)           # [B, C, P*d_model]
         pred = self.forecast_head(flat)            # [B, C, H*c_out]
         return pred.unsqueeze(2)                   # [B, C, 1, H*c_out]  T=1 unifies both modes
 
@@ -152,15 +154,15 @@ class Decoder(nn.Module):                         # FIX: colon, nn.Module
         step=1 patch is correct: fork_sequences already spaced raw blocks by
         stride timesteps, so consecutive patch windows are exactly 1 patch apart.
         """
-        B, C, patch_num, d = enc_out.shape
+        B, C, _, d = enc_out.shape
 
         windows = (
             enc_out
             .unfold(dimension=2, size=self.patch_num_inp, step=1)   # [B, C, T, d, P]
-            .permute(0, 1, 2, 4, 3)                # [B, C, T, P, d]
+            .permute(0, 1, 2, 4, 3) # [B, C, T, P, d]
             .contiguous()
         )
-        flat = windows.reshape(B, C, -1, self.patch_num_inp * d)     # [B, C, T, P_std*d_model]
+        flat = windows.reshape(B, C, -1, self.patch_num_inp * d)     # [B, C, T, P*d_model]
         return self.forecast_head(flat)             # [B, C, T, H*c_out]
 
     def forward(self, enc_out: torch.Tensor) -> torch.Tensor:
@@ -169,7 +171,7 @@ class Decoder(nn.Module):                         # FIX: colon, nn.Module
         # forking:  [B, C, T, H*c_out]
 
 class MOMENT(BaseModel):
-    def __init__(self, config, **kwargs):
+    def __init__(self, config):
         super().__init__()
 
         if isinstance(config, dict):
@@ -185,29 +187,28 @@ class MOMENT(BaseModel):
 
         self.fcd_samples = config.fcd_samples
         self.h = config.h
-        self.n_channels = config.n_channels
-
-        self.encoder = Encoder(config=config)
-        self.decoder = Decoder(config=config)
 
         self.revin = config.revin
         if config.revin:
             self.revin_layer = RevINMultivariate(
-                num_features = config.n_channels,
                 affine = config.revin_affine,
                 subtract_last = config.revin_subtract_last,
             )
 
+        self.encoder = Encoder(config=config)
+        self.decoder = Decoder(config=config)
+
     def forward(
         self,
-        x: torch.Tensor,   # [B, seq_len, C, V]
-        mask: torch.Tensor = None,
-        input_mask: torch.Tensor = None,
-        **kwargs,
+        batch,
     ) -> torch.Tensor:
 
-        x = x[..., 0]                    # [B, seq_len, C]  target only
-        x_enc_in   = x.permute(0, 2, 1)           # [B, C, seq_len]
+        # TODO @wpotosna extend MICA for covariates
+
+        x = batch["insample_y"] # [B, L+(T-1)*step_size, C, 1+Vh]
+        input_mask = batch["available_mask"]  # [B, L+(T-1)*step_size]
+        x = x[..., 0] # [B, L+(T-1)*step_size, C]  target only
+        x_enc_in = x.permute(0, 2, 1) # [B, C, L+(T-1)*step_size]
 
         if self.revin:
             x_enc_in = x_enc_in.permute(0, 2, 1)  # [B, seq_len, C]
@@ -218,8 +219,7 @@ class MOMENT(BaseModel):
             x_enc          = x_enc_in,
             available_mask = input_mask,           # [B, seq_len] from fork_sequences or caller
         )                                          # [B, C, P_total, d_model]
-        forecast = self.decoder(enc_out=enc_out)
-        # both modes: [B, C, T, H*c_out]  — T=1 for standard, T=fcd_samples for forking
+        forecast = self.decoder(enc_out=enc_out) # both modes: [B, C, T, H*c_out]
 
         # RevIN denorm:
         if self.revin:
@@ -233,6 +233,6 @@ class MOMENT(BaseModel):
         B, C, T, _ = forecast.shape
         forecast = forecast.reshape(B, C, T, self.h, -1)   # [B, C, T, H, c_out]
         forecast = forecast.permute(0, 2, 3, 4, 1)         # [B, T, H, c_out, C]
-        forecast = forecast.reshape(B * T, self.h, -1)     # [B*T, H, C*c_out]
+        forecast = forecast.reshape(B * T, self.h, -1)     # [B*T, H, c_out*C]
 
-        return forecast  # [B*T, H, C*c_out]
+        return forecast  # [B*T, H, c_out*C]

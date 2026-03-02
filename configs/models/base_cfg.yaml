@@ -1,16 +1,8 @@
-# ══════════════════════════════════════════════════════════════
-# model_config.yaml  —  Model & training hyper-parameters
-# ══════════════════════════════════════════════════════════════
-#
-# Contains ONLY parameters that belong to the model or training loop —
-# the same regardless of which dataset is loaded.
-#
-# All dataset-specific parameters (horizon, val_size, test_size,
-# hist/futr/stat_exog_cols) live in dataset_config.yaml.
+# ── Random seed ────────────────────────────────────────────
+seed: 1
 
 # ── Encoder window ────────────────────────────────────────────
-# Same for all datasets — an architecture decision.
-context_length: 512
+input_size: 512
 
 # ── Batch mode ────────────────────────────────────────────────
 # dataset_specific : all channels (unique_ids) share the SAME time
@@ -34,27 +26,18 @@ batch_mode: "dataset_specific"
 # sharing the same horizon — no padding or masking required.
 mixing_strategy: "concat"   # "concat" | "round_robin"
 
-# ── DataLoader knobs ──────────────────────────────────────────
+# ── DataLoader ──────────────────────────────────────────
 batch_size: 32
 valid_batch_size: 1024
 num_workers: 4
 drop_last: false
 
-# ── Normalisation ─────────────────────────────────────────────
-normalize: true     # per-channel z-score, fit on training portion only
-
 # ── Training ──────────────────────────────────────────────────
-max_steps: 100000             # total optimiser steps (replaces max_epochs)
-val_check_interval: 1000      # run validation every N steps
+max_steps: 10            # total optimiser steps (replaces max_epochs)
+val_check_interval: 5      # run validation every N steps
 early_stopping_patience: 10   # number of val checks without improvement before stopping
 fcd_samples: 1 # 1 for windows-sampling and >1 for forking-sequences
 
 # ── Checkpointing ─────────────────────────────────────────────
 checkpoint_dir: "checkpoints/"
-save_top_k: 3
-monitor_metric: "val_loss"
-monitor_mode: "min"
-
-# # Logging & checkpointing
-# log_interval: 10000  # Interval for logging training progress
-# checkpoint_interval: 10000  # Interval for saving model checkpoints during training.
+checkpoint_step: 4000

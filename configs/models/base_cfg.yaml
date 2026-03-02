@@ -44,10 +44,10 @@ drop_last: false
 normalize: true     # per-channel z-score, fit on training portion only
 
 # ── Training ──────────────────────────────────────────────────
-max_epochs: 100
-learning_rate: 1.0e-3
-gradient_clip_val: 1.0
-early_stopping_patience: 10
+max_steps: 100000             # total optimiser steps (replaces max_epochs)
+val_check_interval: 1000      # run validation every N steps
+early_stopping_patience: 10   # number of val checks without improvement before stopping
+fcd_samples: 1 # 1 for windows-sampling and >1 for forking-sequences
 
 # ── Checkpointing ─────────────────────────────────────────────
 checkpoint_dir: "checkpoints/"

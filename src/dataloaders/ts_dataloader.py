@@ -86,8 +86,9 @@ class ModelConfig:
     """
     context_length: int
 
-    batch_mode: str              = "dataset_specific"  # "dataset_specific" | "mixed"
+    batch_mode: str              = "dataset_specific"  # "dataset_specific" | "mixed" | "full_series"
     mixing_strategy: str         = "concat"             # "concat" | "round_robin"
+    fcd_samples: int             = 8                    # forked windows per series (full_series mode only)
 
     batch_size: int              = 32
     valid_batch_size: int        = 1024
@@ -95,10 +96,11 @@ class ModelConfig:
     drop_last: bool              = False
     normalize: bool              = True
 
-    max_epochs: int              = 100
+    max_steps: int               = 100_000   # total optimiser steps (not epochs)
+    val_check_interval: int      = 1_000     # run validation every N steps
+    early_stopping_patience: int = 10        # val checks without improvement → stop
     learning_rate: float         = 1e-3
     gradient_clip_val: float     = 1.0
-    early_stopping_patience: int = 10
 
     checkpoint_dir: str          = "checkpoints/"
     save_top_k: int              = 3
@@ -113,9 +115,10 @@ class ModelConfig:
         return cls(**{k: v for k, v in raw.items() if k in known})
 
     def validate(self):
-        if self.batch_mode not in ("dataset_specific", "mixed"):
+        if self.batch_mode not in ("dataset_specific", "mixed", "full_series"):
             raise ValueError(
-                f"batch_mode must be 'dataset_specific' or 'mixed', got '{self.batch_mode}'."
+                f"batch_mode must be 'dataset_specific', 'mixed', or 'full_series', "
+                f"got '{self.batch_mode}'."
             )
         if self.mixing_strategy not in ("concat", "round_robin"):
             raise ValueError(
@@ -253,11 +256,17 @@ def _pivot_to_arrays(
     hist_exog_cols: List[str],
     futr_exog_cols: List[str],
     stat_exog_cols: List[str],
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str], np.ndarray]:
     """
     Long-format DataFrame → aligned float32 numpy arrays.
 
-    Returns: y (T,C), hist (T,C,Vh), futr (T,C,Vf), stat (C,Vs), channel_ids
+    Returns: y (T,C), hist (T,C,Vh), futr (T,C,Vf), stat (C,Vs),
+             channel_ids, available_mask (T,)
+
+    available_mask is read from the 'available_mask' column when present —
+    1 = timestep available for sampling, 0 = excluded.  A timestep is marked
+    available only if ALL channels agree (min across channels).
+    If the column is absent the mask defaults to all-ones.
     """
     df = df.copy()
     if not pd.api.types.is_datetime64_any_dtype(df["ds"]):
@@ -300,7 +309,14 @@ def _pivot_to_arrays(
         .first().loc[channel_ids].values.astype(np.float32)
     ) if stat_exog_cols else np.zeros((C, 0), dtype=np.float32)
 
-    return y, hist, futr, stat, channel_ids
+    # available_mask: (T,) — min across channels so t=0 iff ANY channel is 0
+    if "available_mask" in df.columns:
+        mask_pivot = _piv("available_mask")              # (T, C)
+        available_mask = mask_pivot.min(axis=1)          # (T,)
+    else:
+        available_mask = np.ones(T, dtype=np.float32)
+
+    return y, hist, futr, stat, channel_ids, available_mask
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -345,13 +361,14 @@ class _TSWindowDataset(Dataset):
 
     def __init__(
         self,
-        y:    np.ndarray,
-        hist: np.ndarray,
-        futr: np.ndarray,
-        stat: np.ndarray,
+        y:              np.ndarray,
+        hist:           np.ndarray,
+        futr:           np.ndarray,
+        stat:           np.ndarray,
+        available_mask: np.ndarray,   # (T,) from 'available_mask' col or all-ones
         context_length: int,
-        horizon: int,
-        name: str = "",
+        horizon:        int,
+        name:           str = "",
     ):
         min_len = context_length + horizon
         if y.shape[0] < min_len:
@@ -360,14 +377,15 @@ class _TSWindowDataset(Dataset):
                 f"context_length + horizon ({min_len}). "
                 "Reduce val_size / test_size or context_length."
             )
-        self.y       = torch.from_numpy(y)
-        self.hist    = torch.from_numpy(hist)
-        self.futr    = torch.from_numpy(futr)
-        self.stat    = torch.from_numpy(stat)
-        self.ctx     = context_length
-        self.horizon = horizon
-        self.T       = y.shape[0]
-        self.name    = name
+        self.y              = torch.from_numpy(y)
+        self.hist           = torch.from_numpy(hist)
+        self.futr           = torch.from_numpy(futr)
+        self.stat           = torch.from_numpy(stat)
+        self.available_mask = torch.from_numpy(available_mask.astype(np.float32))
+        self.ctx            = context_length
+        self.horizon        = horizon
+        self.T              = y.shape[0]
+        self.name           = name
 
 
 class DatasetSpecificWindowDataset(_TSWindowDataset):
@@ -438,37 +456,201 @@ class MixedWindowDataset(_TSWindowDataset):
         )
 
 
+class FullSeriesDataset(_TSWindowDataset):
+    """
+    Returns the FULL time series without any windowing.
+    Used with batch_mode='full_series' for forking-sequence training.
+
+    One dataset file = one sample (__len__ = 1). ConcatDataset across
+    multiple files gives the effective batch pool.
+
+    _forking_sequences.py handles all window selection at training time.
+    Val/test series are taken from the fixed tail of each file so they
+    are all the same length — no padding needed there.
+
+    Item shapes (unpadded — collate pads to longest T in each train batch):
+        x_enc       : (T, C, 1+Vh)   full series — target + hist exogs
+        x_futr      : (T, C, Vf)     full future-known covariates
+        x_stat      : (C, Vs)        static covariates (time-invariant)
+        input_mask  : (T,)           1=real timestep, 0=NaN/missing
+        series_len  : scalar         actual T (used by collate for padding)
+        horizon     : scalar         dataset forecast horizon H
+    """
+
+    def __len__(self) -> int:
+        return 1   # whole file = one sample
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        y_enc = self.y.unsqueeze(-1)                    # (T, C, 1)
+        x_enc = (
+            torch.cat([y_enc, self.hist], dim=-1)
+            if self.hist.shape[-1] > 0 else y_enc
+        )                                               # (T, C, 1+Vh)
+
+        return dict(
+            x_enc          = x_enc,
+            x_futr         = self.futr,
+            x_stat         = self.stat,
+            available_mask = self.available_mask,       # (T,) from df column
+            series_len     = torch.tensor(self.T, dtype=torch.long),
+            horizon        = torch.tensor(self.horizon, dtype=torch.long),
+        )
+
 def _make_dataset(
-    y, hist, futr, stat, mcfg: ModelConfig, horizon: int, name: str = ""
+    y, hist, futr, stat, available_mask, mcfg: ModelConfig, horizon: int, name: str = ""
 ) -> _TSWindowDataset:
+    if mcfg.batch_mode == "full_series":
+        return FullSeriesDataset(y, hist, futr, stat, available_mask, mcfg.context_length, horizon, name)
     cls = (
         DatasetSpecificWindowDataset
         if mcfg.batch_mode == "dataset_specific"
         else MixedWindowDataset
     )
-    return cls(y, hist, futr, stat, mcfg.context_length, horizon, name)
+    return cls(y, hist, futr, stat, available_mask, mcfg.context_length, horizon, name)
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Collate
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _build_channel_and_hist_masks(
+    batch: List[Dict[str, torch.Tensor]],
+    C_max: int,
+    Vh_max: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Build channel_mask [B, C_max] and hist_mask [B, Vh_max].
+
+    channel_mask[b, c] = 1  iff channel c is a real unique_id for item b.
+    hist_mask[b, v]    = 1  iff hist exog column v is real for item b.
+
+    x_enc dim -1 layout:
+        index 0     = target y  — NEVER padded, NEVER masked
+        index 1..Vh = hist exogs — hist_mask covers these indices
+    """
+    B = len(batch)
+    channel_mask = torch.zeros(B, C_max, dtype=torch.float32)
+    hist_mask    = torch.zeros(B, max(Vh_max, 1), dtype=torch.float32)
+    for i, s in enumerate(batch):
+        C_i  = s["x_enc"].shape[-2]
+        Vh_i = s["x_enc"].shape[-1] - 1
+        channel_mask[i, :C_i] = 1.0
+        if Vh_i > 0:
+            hist_mask[i, :Vh_i] = 1.0
+    return channel_mask, hist_mask
+
+
 def _collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
     """
-    Stack a list of same-horizon sample dicts into batched tensors.
-    All samples in a batch are guaranteed to have the same horizon,
-    so shapes are always uniform — no padding logic needed here.
+    Collate for dataset_specific and mixed batch modes.
+
+    Items share the same horizon but may come from different datasets with
+    different numbers of channels (C) or hist exog columns (Vh).
+
+    Padding (right-pad with zeros):
+        x_enc  [..., C, 1+Vh] → [..., C_max, 1+Vh_max]   target at index 0 always real
+        x_futr [..., C, Vf]   → [..., C_max, Vf]          C padded, Vf unchanged
+        x_stat [C, Vs]        → [C_max, Vs]               C padded, Vs unchanged
+        y      [..., C]       → [..., C_max]               C padded
+
+    Added keys:
+        channel_mask : [B, C_max]   1=real unique_id  0=padded
+        hist_mask    : [B, Vh_max]  1=real hist exog  0=padded/absent
     """
+    import torch.nn.functional as F
+    C_max  = max(s["x_enc"].shape[-2]     for s in batch)
+    Vh_max = max(s["x_enc"].shape[-1] - 1 for s in batch)
     out: Dict[str, torch.Tensor] = {}
     for key in batch[0]:
-        val = batch[0][key]
-        out[key] = (
-            torch.stack([s[key] for s in batch], dim=0)
-            if isinstance(val, torch.Tensor)
-            else [s[key] for s in batch]
-        )
+        first = batch[0][key]
+        if not isinstance(first, torch.Tensor):
+            out[key] = [s[key] for s in batch]; continue
+        if key == "x_enc":
+            out[key] = torch.stack([
+                F.pad(s[key], (0, Vh_max - (s[key].shape[-1] - 1),
+                               0, C_max  -  s[key].shape[-2]))
+                for s in batch
+            ])
+        elif key == "x_futr":
+            out[key] = torch.stack([
+                F.pad(s[key], (0, 0, 0, C_max - s[key].shape[-2]))
+                for s in batch
+            ])
+        elif key == "x_stat":
+            out[key] = torch.stack([
+                F.pad(s[key], (0, 0, 0, C_max - s[key].shape[-2]))
+                for s in batch
+            ])
+        elif key == "y":
+            out[key] = torch.stack([
+                F.pad(s[key], (0, C_max - s[key].shape[-1]))
+                for s in batch
+            ])
+        else:
+            out[key] = torch.stack([s[key] for s in batch])
+    channel_mask, hist_mask = _build_channel_and_hist_masks(batch, C_max, Vh_max)
+    out["channel_mask"] = channel_mask
+    out["hist_mask"]    = hist_mask
     return out
 
+
+def _full_series_collate_fn(
+    batch: List[Dict[str, torch.Tensor]],
+) -> Dict[str, torch.Tensor]:
+    """
+    Collate for full_series mode.
+
+    Two dimensions may vary:
+      1. Time axis T — right-pad with zeros; extend available_mask with zeros
+         so the FCD sampler never draws from padded positions.
+      2. Channel / hist-covariate count — right-pad x_enc C and Vh dims.
+
+    Val/test batches are same-length (fixed tail split) — T-padding is a no-op.
+
+    Added keys:
+        channel_mask : [B, C_max]   1=real unique_id  0=padded
+        hist_mask    : [B, Vh_max]  1=real hist exog  0=padded/absent
+    """
+    import torch.nn.functional as F
+    T_max  = max(s["x_enc"].shape[0]      for s in batch)
+    C_max  = max(s["x_enc"].shape[-2]     for s in batch)
+    Vh_max = max(s["x_enc"].shape[-1] - 1 for s in batch)
+    out: Dict[str, torch.Tensor] = {}
+    for key in batch[0]:
+        first = batch[0][key]
+        if not isinstance(first, torch.Tensor):
+            out[key] = [s[key] for s in batch]; continue
+        if key == "x_enc":
+            # F.pad args are innermost-first: (Vh_right, C_right, T_right)
+            out[key] = torch.stack([
+                F.pad(s[key],
+                      (0, Vh_max - (s[key].shape[-1] - 1),
+                       0, C_max  -  s[key].shape[-2],
+                       0, T_max  -  s[key].shape[0]))
+                for s in batch
+            ])
+        elif key == "x_futr":
+            out[key] = torch.stack([
+                F.pad(s[key],
+                      (0, 0,
+                       0, C_max - s[key].shape[-2],
+                       0, T_max - s[key].shape[0]))
+                for s in batch
+            ])
+        elif key == "available_mask":
+            out[key] = torch.stack([
+                F.pad(s[key], (0, T_max - s[key].shape[0]))
+                for s in batch
+            ])
+        elif isinstance(first, torch.Tensor):
+            out[key] = torch.stack([s[key] for s in batch])
+        else:
+            out[key] = [s[key] for s in batch]
+    channel_mask, hist_mask = _build_channel_and_hist_masks(batch, C_max, Vh_max)
+    out["channel_mask"] = channel_mask
+    out["hist_mask"]    = hist_mask
+    return out
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Horizon-bucketed batch sampler
@@ -682,18 +864,18 @@ class DataLoaderFactory:
 
     def _arrays_from_df(
         self, df: pd.DataFrame, entry: DatasetEntry
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        y, hist, futr, stat, _ = _pivot_to_arrays(
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        y, hist, futr, stat, _, available_mask = _pivot_to_arrays(
             df, entry.hist_exog_cols, entry.futr_exog_cols, entry.stat_exog_cols
         )
-        return y, hist, futr, stat
+        return y, hist, futr, stat, available_mask
 
     def _build_train(self):
         for entry in self.dcfg.train:
             df = _load_df(entry.path)
             train_df, _, _ = _split_df(df, entry.val_size, entry.test_size)
 
-            y, hist, futr, stat = self._arrays_from_df(train_df, entry)
+            y, hist, futr, stat, available_mask = self._arrays_from_df(train_df, entry)
 
             norm = Normaliser()
             if self.mcfg.normalize:
@@ -701,7 +883,7 @@ class DataLoaderFactory:
                 y, hist = norm.transform(y, hist)
             self.normalisers[entry.name] = norm
 
-            ds = _make_dataset(y, hist, futr, stat, self.mcfg, entry.horizon, entry.name)
+            ds = _make_dataset(y, hist, futr, stat, available_mask, self.mcfg, entry.horizon, entry.name)
             self._horizon_groups[entry.horizon].append((ds, entry.weight, entry.name))
 
     def _build_eval_dataset(self, entry: DatasetEntry, split: str) -> _TSWindowDataset:
@@ -719,7 +901,7 @@ class DataLoaderFactory:
             ctx_rows = train_df.groupby("unique_id", sort=False).tail(self.mcfg.context_length)
             eval_df  = pd.concat([ctx_rows, eval_df]).sort_values(["unique_id", "ds"])
 
-        y, hist, futr, stat = self._arrays_from_df(eval_df, entry)
+        y, hist, futr, stat, available_mask = self._arrays_from_df(eval_df, entry)
 
         # Reuse training normaliser if available (same file → same z-score stats)
         norm = self.normalisers.get(entry.name)
@@ -729,7 +911,7 @@ class DataLoaderFactory:
         if self.mcfg.normalize:
             y, hist = norm.transform(y, hist)
 
-        return _make_dataset(y, hist, futr, stat, self.mcfg, entry.horizon, entry.name)
+        return _make_dataset(y, hist, futr, stat, available_mask, self.mcfg, entry.horizon, entry.name)
 
     def _make_horizon_batch_sampler(
         self, rank: int = 0, world_size: int = 1
@@ -804,12 +986,17 @@ class DataLoaderFactory:
             rank=effective_rank, world_size=effective_world_size
         )
 
+        collate = (
+            _full_series_collate_fn
+            if self.mcfg.batch_mode == "full_series"
+            else _collate_fn
+        )
         return DataLoader(
             combined,
             batch_sampler=batch_sampler,    # overrides batch_size / shuffle / sampler
             num_workers=self.mcfg.num_workers,
             pin_memory=True,
-            collate_fn=_collate_fn,
+            collate_fn=collate,
             persistent_workers=self.mcfg.num_workers > 0,
         )
 
@@ -846,6 +1033,11 @@ class DataLoaderFactory:
                 DistributedSampler(ds, num_replicas=world_size, rank=rank, shuffle=False)
                 if distributed else None
             )
+            collate = (
+                _full_series_collate_fn
+                if self.mcfg.batch_mode == "full_series"
+                else _collate_fn
+            )
             loaders[entry.name] = DataLoader(
                 ds,
                 batch_size=self.mcfg.valid_batch_size,
@@ -854,7 +1046,7 @@ class DataLoaderFactory:
                 num_workers=self.mcfg.num_workers,
                 pin_memory=True,
                 drop_last=False,
-                collate_fn=_collate_fn,
+                collate_fn=collate,
                 persistent_workers=self.mcfg.num_workers > 0,
             )
         return loaders
@@ -879,111 +1071,3 @@ def set_epoch(loader: DataLoader, epoch: int) -> None:
         sampler.set_epoch(epoch)
     else:
         warnings.warn("set_epoch: sampler does not support set_epoch — no-op.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Self-test  (python ts_dataloader.py)
-# ─────────────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    import os
-    import tempfile
-
-    np.random.seed(42)
-
-    def _synth(n_series: int = 4, n_steps: int = 700) -> pd.DataFrame:
-        dates = pd.date_range("2020-01-01", periods=n_steps, freq="h")
-        rows  = []
-        for i in range(n_series):
-            for t, ds in enumerate(dates):
-                rows.append(dict(
-                    unique_id      = f"s{i}",
-                    ds             = ds,
-                    y              = float(np.sin(t / 24 + i) + np.random.randn() * 0.1),
-                    temperature    = float(20 + 5 * np.cos(t / 24)),
-                    day_of_week    = float(ds.dayofweek),
-                    price_forecast = float(1.0 + 0.1 * np.random.randn()),
-                    holiday_flag   = float(ds.dayofweek >= 5),
-                    region_id      = float(i % 2),
-                ))
-        return pd.DataFrame(rows)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        # Three datasets: two share horizon=96, one has horizon=48
-        p1 = os.path.join(tmp, "ds1.parquet"); _synth(4, 700).to_parquet(p1, index=False)
-        p2 = os.path.join(tmp, "ds2.parquet"); _synth(3, 650).to_parquet(p2, index=False)
-        p3 = os.path.join(tmp, "ds3.parquet"); _synth(2, 600).to_parquet(p3, index=False)
-
-        def entry(path, name, horizon, val, test, weight=1):
-            return dict(
-                path=path, name=name,
-                horizon=horizon, val_size=val, test_size=test,
-                weight=weight,
-                hist_exog_cols=["temperature", "day_of_week"],
-                futr_exog_cols=["price_forecast", "holiday_flag"],
-                stat_exog_cols=["region_id"],
-            )
-
-        mcfg_d = dict(
-            context_length=48,
-            batch_mode="dataset_specific",
-            batch_size=4,
-            valid_batch_size=8,
-            normalize=True,
-            num_workers=0,
-        )
-        dcfg_d = dict(
-            train=[
-                entry(p1, "ds1", horizon=96, val=96,  test=192, weight=2),
-                entry(p2, "ds2", horizon=96, val=96,  test=192, weight=1),  # same horizon as ds1
-                entry(p3, "ds3", horizon=48, val=48,  test=96,  weight=1),  # different horizon
-            ],
-            validation=[
-                {**entry(p1, "ds1_val", horizon=96, val=96, test=192), "use_context_head": True},
-                {**entry(p3, "ds3_val", horizon=48, val=48, test=96),  "use_context_head": True},
-            ],
-            test=[
-                {**entry(p1, "ds1_test", horizon=96, val=96, test=192), "use_context_head": True},
-                {**entry(p3, "ds3_test", horizon=48, val=48, test=96),  "use_context_head": True},
-            ],
-        )
-
-        def _tmp(d):
-            f = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
-            yaml.dump(d, f); f.close(); return f.name
-
-        for strategy in ("concat", "round_robin"):
-            print(f"\n{'═'*60}")
-            print(f"  mixing_strategy = {strategy}")
-            print(f"  horizon groups  : 96 (ds1 w=2, ds2 w=1)  |  48 (ds3 w=1)")
-            print(f"{'═'*60}")
-
-            mc = _tmp({**mcfg_d, "mixing_strategy": strategy})
-            dc = _tmp(dcfg_d)
-            factory = DataLoaderFactory(ModelConfig.from_yaml(mc), DatasetConfig.from_yaml(dc))
-            os.unlink(mc); os.unlink(dc)
-
-            print("── train (first 4 batches) ──")
-            loader = factory.train_dataloader()
-            set_epoch(loader, 0)
-            for i, b in enumerate(loader):
-                h = b["horizon"][0].item()
-                print(f"  batch {i}  horizon={h:3d}  "
-                      f"x_enc={tuple(b['x_enc'].shape)}  y={tuple(b['y'].shape)}")
-                if i >= 3:
-                    break
-
-            print("── val ──")
-            for name, ldr in factory.val_dataloaders().items():
-                b = next(iter(ldr))
-                print(f"  [{name}]  horizon={b['horizon'][0].item()}  "
-                      f"x_enc={tuple(b['x_enc'].shape)}  y={tuple(b['y'].shape)}")
-
-            print("── test ──")
-            for name, ldr in factory.test_dataloaders().items():
-                b = next(iter(ldr))
-                print(f"  [{name}]  horizon={b['horizon'][0].item()}  "
-                      f"x_enc={tuple(b['x_enc'].shape)}  y={tuple(b['y'].shape)}")
-
-        print("\n✓ All loaders verified — every batch is horizon-homogeneous.")
-        

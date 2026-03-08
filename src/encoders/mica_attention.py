@@ -35,8 +35,7 @@ class ScaledDotProductAttention(nn.Module):
         v: torch.Tensor,
         n_channels: int,
         prev: Optional[torch.Tensor] = None,
-        attn_mask: Optional[torch.Tensor] = None,
-        key_padding_mask: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ):
         """
         Scaled Dot-Product Attention.
@@ -46,8 +45,7 @@ class ScaledDotProductAttention(nn.Module):
             k: [bs * n_channels x seq_len x n_heads x d_k]
             v: [bs * n_channels x seq_len x n_heads x d_v]
             prev            : [bs x n_heads x q_len x seq_len]
-            key_padding_mask: [bs x seq_len]
-            attn_mask       : [1 x seq_len x seq_len]
+            attention_mask       : [1 x seq_len x seq_len]
             
         Output shape:
             output: [bs x n_heads x seq_len x d_v]
@@ -67,18 +65,9 @@ class ScaledDotProductAttention(nn.Module):
         if prev is not None:
             attn_scores = attn_scores + prev
         
-        # Apply attention mask (optional)
-        if attn_mask is not None:
-            if attn_mask.dtype == torch.bool:
-                attn_scores.masked_fill_(attn_mask, -np.inf)
-            else:
-                attn_scores += attn_mask
-        
-        # Apply key padding mask (optional)
-        if key_padding_mask is not None:
-            attn_scores.masked_fill_(
-                    key_padding_mask.unsqueeze(1).unsqueeze(2), -np.inf
-            )
+        if attention_mask is not None:
+            # Both bool and float use same convention: 1/True=attend, 0/False=block
+            attn_scores = attn_scores.masked_fill(attention_mask == 0, float('-inf'))
         
         # Normalize attention weights
         attn_weights = F.softmax(attn_scores, dim=-1)
@@ -213,8 +202,7 @@ class InfiniScaledDotProductAttention(ScaledDotProductAttention):
         v: torch.Tensor,
         n_channels: int,
         prev: Optional[torch.Tensor] = None,
-        attn_mask: Optional[torch.Tensor] = None,
-        key_padding_mask: Optional[torch.Tensor] = None,
+        attn_attention_maskmask: Optional[torch.Tensor] = None,
     ):
         """
         Scaled Dot-Product Attention with memory mechanism.
@@ -225,8 +213,7 @@ class InfiniScaledDotProductAttention(ScaledDotProductAttention):
             v: [bs * n_channels x seq_len x n_heads x d_v]
             n_channels: int
             prev            : [bs x n_heads x q_len x seq_len]
-            key_padding_mask: [bs x seq_len]
-            attn_mask       : [1 x seq_len x seq_len]
+            attention_mask       : [bs*n_channels x 1 x seq_len x seq_len]
             
         Output shape:
             output: [bs x n_channels x n_heads x seq_len x d_v]
@@ -253,18 +240,10 @@ class InfiniScaledDotProductAttention(ScaledDotProductAttention):
             prev = prev.view(batch_size, n_channels, self.n_heads, seq_len, seq_len)
             attn_scores = attn_scores + prev
         
-        # Apply attention mask (optional)
-        if attn_mask is not None:
-            if attn_mask.dtype == torch.bool:
-                attn_scores.masked_fill_(attn_mask, -np.inf)
-            else:
-                attn_scores += attn_mask
-        
-        # Apply key padding mask (optional)
-        if key_padding_mask is not None:
-            attn_scores.masked_fill_(
-                key_padding_mask.unsqueeze(1).unsqueeze(2), -np.inf
-            )
+        if attention_mask is not None:
+            # Both bool and float use same convention: 1/True=attend, 0/False=block
+            attention_mask = attention_mask.reshape(batch_size, n_channels, 1, seq_len, seq_len)
+            attn_scores = attn_scores.masked_fill(attention_mask == 0, float('-inf'))
         
         # Normalize attention weights
         attn_weights = F.softmax(attn_scores, dim=-1)
@@ -357,12 +336,9 @@ class MultiheadAttention(nn.Module):
     def forward(
         self,
         n_channels: int,
-        Q: torch.Tensor,
-        K: Optional[torch.Tensor] = None,
-        V: Optional[torch.Tensor] = None,
+        inputs_embeds: torch.Tensor,
         prev: Optional[torch.Tensor] = None,
-        attn_mask: Optional[torch.Tensor] = None,
-        key_padding_mask: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ):
         """
         Forward pass for multi-head attention.
@@ -379,19 +355,15 @@ class MultiheadAttention(nn.Module):
         Output shape:
             output: [bs*n_channels x seq_len x hidden_size]
             A_mem: [bs x n_channels x n_heads x seq_len x d_v] (if infini_mixer_type != 'none')
-            attn_weights: [bs x (n_channels) x n_heads x seq_len x seq_len]
+            attn_weights: [bs*n_channels x 1 x seq_len x seq_len]
         """
-        
-        batch_size = Q.size(0)
-        if K is None:
-            K = Q
-        if V is None:
-            V = Q
+
+        batch_size, _, _ = inputs_embeds.shape
         
         # Linear projections and split into multiple heads
-        q_s = self.W_Q(Q).view(batch_size, -1, self.n_heads, self.d_k)  # [bs x seq_len x n_heads x d_k]
-        k_s = self.W_K(K).view(batch_size, -1, self.n_heads, self.d_k)  # [bs x seq_len x n_heads x d_k]
-        v_s = self.W_V(V).view(batch_size, -1, self.n_heads, self.d_v)  # [bs x seq_len x n_heads x d_v]
+        q_s = self.W_Q(inputs_embeds).view(batch_size, -1, self.n_heads, self.d_k)  # [bs x seq_len x n_heads x d_k]
+        k_s = self.W_K(inputs_embeds).view(batch_size, -1, self.n_heads, self.d_k)  # [bs x seq_len x n_heads x d_k]
+        v_s = self.W_V(inputs_embeds).view(batch_size, -1, self.n_heads, self.d_v)  # [bs x seq_len x n_heads x d_v]
 
         # Apply Scaled Dot-Product Attention (multiple heads)
         if self.res_attention:
@@ -401,8 +373,7 @@ class MultiheadAttention(nn.Module):
                 v=v_s,
                 n_channels=n_channels,
                 prev=prev,
-                key_padding_mask=key_padding_mask,
-                attn_mask=attn_mask,
+                attention_mask=attention_mask,
             )
         else:
             output, attn_weights = self.sdp_attn(
@@ -410,8 +381,7 @@ class MultiheadAttention(nn.Module):
                 k=k_s, 
                 v=v_s, 
                 n_channels=n_channels,
-                key_padding_mask=key_padding_mask, 
-                attn_mask=attn_mask
+                attention_mask=attention_mask
             )
         
         # Final output projection

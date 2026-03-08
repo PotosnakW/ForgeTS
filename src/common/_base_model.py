@@ -1,22 +1,34 @@
 """
-_base_model.py
-──────────────
+base_model.py
+─────────────
 BaseModel is an nn.Module that also owns the training loop.
 
 Two-phase construction
 ──────────────────────
-Subclasses (e.g. MOMENT) only need their own architecture args in __init__.
-Training state is attached lazily via setup_training() before calling fit().
+Subclasses only need their own architecture args in __init__.
+Training state is attached lazily via setup_training() before fit().
 
-    class MOMENT(BaseModel):
+    class MyModel(BaseModel):
         def __init__(self, config):
-            super().__init__()          # just nn.Module — no training args needed
+            super().__init__()
             self.encoder = Encoder(config)
+
+        def forward(self, batch):
             ...
 
-    model = MOMENT(config)
+    model = MyModel(config)
     model.setup_training(mcfg, train_loader, val_loaders)
     model.fit()
+
+train vs val/test batch preparation
+─────────────────────────────────────
+_prepare_batch checks self.training (set by self.train() / self.eval()):
+
+    Training  → fcd_samples from mcfg  (random anchor sampling via heterogeneous_sampler)
+    Val/test  → fcd_samples = -1        (full series, all windows, no random sampling)
+
+This means val and test always produce predictions for every valid FCD window
+in the series, which is what you want for evaluation metrics.
 """
 
 from __future__ import annotations
@@ -27,6 +39,7 @@ import time
 from abc import abstractmethod
 from pathlib import Path
 from typing import Callable, Dict, Optional
+from functools import partial
 
 import numpy as np
 import torch
@@ -34,10 +47,16 @@ import torch.nn as nn
 from torch import Tensor
 from torch.utils.data import DataLoader
 
-from ..utils.utils import EarlyStopper
+from .utils import EarlyStopper
+from dataloaders._forking_sequences import fork_sequences
+from losses.torch_losses import *
 
 logger = logging.getLogger(__name__)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Checkpoint manager
+# ─────────────────────────────────────────────────────────────────────────────
 
 class CheckpointManager:
     def __init__(self, checkpoint_dir: str, checkpoint_step: int = 1000):
@@ -57,6 +76,11 @@ class CheckpointManager:
         model.load_state_dict(payload["model_state_dict"])
         logger.info("Checkpoint loaded ← %s", path)
         return payload
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Infinite loader
+# ─────────────────────────────────────────────────────────────────────────────
 
 class _InfiniteLoader:
     def __init__(self, loader: DataLoader):
@@ -87,51 +111,46 @@ class BaseModel(nn.Module):
     """
     nn.Module base that also owns the step-based training loop.
 
-    Subclass responsibility
-    ───────────────────────
+    Subclass responsibilities
+    ─────────────────────────
     __init__(self, ...)
-        Call super().__init__() — no training args needed here.
-        Build your architecture (layers, heads, etc.).
+        Call super().__init__(). Build architecture only — no training args.
 
-    forward(self, batch) → Tensor
-        Implement the forward pass.
-        `batch` is already the output of fork_sequences when batch_mode="full_series".
+    forward(self, batch) -> Tensor
+        Implement the forward pass. batch is the output of fork_sequences
+        (when batch_mode="full_series") or the raw collated batch otherwise.
 
-    compute_loss(self, pred, batch) → Tensor    [optional override]
-        Default: MSE(pred[..., :C], outsample_y).
-        Override for probabilistic losses, auxiliary losses, masking, etc.
-
-    Training
-    ────────
-    Call setup_training(mcfg, train_loader, val_loaders, ...) before fit().
+    compute_loss(self, pred, batch) -> Tensor   [optional]
+        Default: MSE against outsample_y. Override for custom losses.
     """
 
     def __init__(self):
         super().__init__()
-        # Training state is None until setup_training() is called.
         self._training_ready = False
-
-    # ── must override ────────────────────────────────────────────
 
     @abstractmethod
     def forward(self, batch: Dict[str, Tensor]) -> Tensor:
         ...
 
-    # ── optional override ────────────────────────────────────────
-
     def compute_loss(self, pred: Tensor, batch: Dict[str, Tensor]) -> Tensor:
         """
-        Default point-forecast MSE loss.
-        pred  : [B*T, H, c_out*C]
-        y     : [B,   T,  H,  C]
+        pred           : [B, T, H, C]
+        outsample_y    : [B, T, H, C]
+        outsample_mask : [B, T, H, C]  1=real timestep+channel, 0=padded/missing
         """
-        y = batch["outsample_y"]        # [B, T, H, C]
+        y    = batch["outsample_y"]
         B, T, H, C = y.shape
-        y    = y.reshape(B * T, H, C)
-        pred = pred[..., :C]            # drop extra c_out dims for point forecast
-        return self.loss_fn(pred, y)
 
-    # ── setup ────────────────────────────────────────────────────
+        y    = y.reshape(B * T, H, C)
+        pred = pred.reshape(B * T, H, C)
+
+        outsample_mask = batch.get("outsample_mask")
+        if outsample_mask is not None:
+            mask = outsample_mask.reshape(B * T, H, C).float()
+        else:
+            mask = None
+
+        return self.loss_fn(pred, y, mask)
 
     def setup_training(
         self,
@@ -139,17 +158,11 @@ class BaseModel(nn.Module):
         train_loader:   DataLoader,
         val_loaders:    Dict[str, DataLoader],
         optimizer:      Optional[torch.optim.Optimizer] = None,
-        scheduler=None,
+        scheduler       = None,
         loss_fn:        Optional[Callable[[Tensor, Tensor], Tensor]] = None,
         device:         Optional[torch.device] = None,
         seed:           int = 42,
     ) -> "BaseModel":
-        """
-        Attach training state to the model.  Call once before fit().
-        Returns self for chaining:
-
-            model = MOMENT(config).setup_training(mcfg, train_loader, val_loaders)
-        """
         self.mcfg         = mcfg
         self.train_loader = train_loader
         self.val_loaders  = val_loaders
@@ -163,22 +176,24 @@ class BaseModel(nn.Module):
         self.to(self.device)
 
         self.optimizer = optimizer or torch.optim.AdamW(
-            self.parameters(),
-            lr=mcfg.learning_rate,
-            weight_decay=1e-2,
+            self.parameters(), lr=mcfg.learning_rate, weight_decay=1e-2
         )
 
-        self.loss_fn = loss_fn or nn.functional.mse_loss
+        _LOSS_FNS = {
+        "mse": mse_loss,
+        "mae": mae_loss,
+        "quantile": partial(quantile_loss, quantiles=getattr(mcfg, "quantiles", [])),
+        }
+        self.loss_fn = _LOSS_FNS[getattr(mcfg, "loss", "mse")]
 
         self.early_stopper = EarlyStopper(
-            patience=mcfg.early_stopping_patience,
-            mode=mcfg.monitor_mode,
+            patience = mcfg.early_stopping_patience,
+            mode     = mcfg.monitor_mode,
         )
         self.ckpt_manager = CheckpointManager(
             checkpoint_dir  = mcfg.checkpoint_dir,
             checkpoint_step = getattr(mcfg, "checkpoint_step", 1000),
         )
-
         self._training_ready = True
         return self
 
@@ -189,7 +204,7 @@ class BaseModel(nn.Module):
                 "before fit() / train_step() / validate()."
             )
 
-    # ── internal helpers ─────────────────────────────────────────
+    # ── batch preparation ────────────────────────────────────────────────────
 
     def _to_device(self, batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
         return {
@@ -199,21 +214,28 @@ class BaseModel(nn.Module):
 
     def _prepare_batch(self, raw_batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
         """
-        For full_series mode: call fork_sequences to convert raw series into
-        model-ready windows.  Other modes: pass through as-is.
+        For full_series mode: runs fork_sequences to convert the raw padded
+        series into model-ready windows.
+
+        self.training controls fcd_samples:
+            True  (train_step called self.train())  → mcfg.fcd_samples
+                  Random anchor sampling via heterogeneous_sampler.
+            False (val_step called self.eval())     → -1
+                  Full series passed to _unfold_windows; every valid FCD
+                  window is produced with no random sampling.
         """
         raw_batch = self._to_device(raw_batch)
         if self.mcfg.batch_mode == "full_series":
-            from fork_sequences import fork_sequences
+            fcd_samples = getattr(self.mcfg, "fcd_samples", 8) if self.training else -1
             return fork_sequences(
                 batch          = raw_batch,
                 context_length = self.mcfg.context_length,
-                fcd_samples    = getattr(self.mcfg, "fcd_samples", 8),
+                fcd_samples    = fcd_samples,
                 horizon        = int(raw_batch["horizon"][0].item()),
             )
         return raw_batch
 
-    # ── core steps ───────────────────────────────────────────────
+    # ── core steps ───────────────────────────────────────────────────────────
 
     def train_step(self, raw_batch: Dict[str, Tensor]) -> float:
         self._assert_training_ready()
@@ -226,7 +248,6 @@ class BaseModel(nn.Module):
         loss.backward()
         nn.utils.clip_grad_norm_(self.parameters(), self.mcfg.gradient_clip_val)
         self.optimizer.step()
-
         if self.scheduler is not None:
             self.scheduler.step()
 
@@ -241,28 +262,74 @@ class BaseModel(nn.Module):
 
     @torch.no_grad()
     def validate(self) -> Dict[str, Dict[str, float]]:
-        """Returns {loader_name: {"loss": mean_loss}}."""
         self._assert_training_ready()
         self.eval()
         results: Dict[str, Dict[str, float]] = {}
         for name, loader in self.val_loaders.items():
             total, n = 0.0, 0
-            for batch in loader:
-                total += self.val_step(batch)
+            for raw_batch in loader:
+                total += self.val_step(raw_batch)
                 n     += 1
             results[name] = {"loss": total / n if n > 0 else float("nan")}
         return results
 
     @torch.no_grad()
-    def predict(self, loader: DataLoader) -> Tensor:
+    def predict_step(self, raw_batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        """Single batch inference. Returns pred, targets, outsample_mask for that batch."""
         self.eval()
-        preds = []
-        for batch in loader:
-            batch = self._prepare_batch(self._to_device(batch))
-            preds.append(self(batch).cpu().float())
-        return torch.cat(preds, dim=0)
+        raw_batch = self._to_device(raw_batch)
+        batch     = self._prepare_batch(raw_batch)
 
-    # ── training loop ────────────────────────────────────────────
+        pred           = self(batch).cpu().float()       # [B, n_fcds, H, C_out]
+        targets        = batch["outsample_y"].cpu()      # [B, n_fcds, H, C]
+        outsample_mask = batch.get("outsample_mask")
+        if outsample_mask is not None:
+            outsample_mask = outsample_mask.cpu()
+
+        C    = targets.shape[-1]
+        pred = pred[..., :C]
+
+        return dict(pred=pred, targets=targets, outsample_mask=outsample_mask)
+
+    @torch.no_grad()
+    def predict(self, loader, device=None):
+        self.eval()
+        if device is not None:
+            self.to(device)
+
+        results = {}
+        for raw_batch in loader:
+            step          = self.predict_step(raw_batch)
+            pred          = step["pred"]
+            targets       = step["targets"]
+            outsample_mask = step["outsample_mask"]
+
+            dataset_names = raw_batch.get("dataset_name", ["unknown"] * targets.shape[0])
+            channel_ids   = raw_batch.get("channel_ids",  [None]      * targets.shape[0])
+
+            for b in range(targets.shape[0]):
+                name = dataset_names[b]
+                if name not in results:
+                    results[name] = {"channel_ids": channel_ids[b],
+                                    "preds": [], "targets": [], "outsample_mask": []}
+                results[name]["preds"].append(pred[b])
+                results[name]["targets"].append(targets[b])
+                if outsample_mask is not None:
+                    results[name]["outsample_mask"].append(outsample_mask[b])
+
+        for name, d in results.items():
+            d["preds"]          = torch.cat(d["preds"],   dim=0)
+            d["targets"]        = torch.cat(d["targets"], dim=0)
+            d["outsample_mask"] = (
+                torch.cat(d["outsample_mask"], dim=0)
+                if d["outsample_mask"] else None
+            )
+        return results
+
+    def _log_val_metrics(self, val_metrics: Dict[str, Dict[str, float]]):
+        for name, metrics in val_metrics.items():
+            parts = "  ".join(f"{k}={v:.4f}" for k, v in metrics.items())
+            logger.info("  [val/%s] step %d  %s", name, self.global_step, parts)
 
     def fit(self) -> Dict[str, Dict[str, float]]:
         self._assert_training_ready()
@@ -285,13 +352,20 @@ class BaseModel(nn.Module):
         t0 = time.time()
 
         while self.global_step < self.mcfg.max_steps:
-            train_loss   = self.train_step(next(train_iter))
+            train_loss = self.train_step(next(train_iter))
             self.global_step += 1
+
+            # All-reduce train loss across ranks so rank 0 logs the global mean.
+            # This is a no-op in single-process training (_world_size == 1).
+            if self._world_size > 1:
+                t = torch.tensor(train_loss, device=self.device)
+                dist.all_reduce(t, op=dist.ReduceOp.SUM)
+                train_loss = (t / self._world_size).item()
 
             self.ckpt_manager.step(
                 self.global_step, self,
-                optimizer=self.optimizer.state_dict(),
-                loss=train_loss,
+                optimizer = self.optimizer.state_dict(),
+                loss      = train_loss,
             )
 
             log_every = max(1, self.mcfg.val_check_interval // 10)
@@ -321,43 +395,45 @@ class BaseModel(nn.Module):
 
         return final_metrics
 
-    def _log_val_metrics(self, val_metrics: Dict[str, Dict[str, float]]):
-        for name, metrics in val_metrics.items():
-            parts = "  ".join(f"{k}={v:.4f}" for k, v in metrics.items())
-            logger.info("  [val/%s] step %d  %s", name, self.global_step, parts)
-
-    # ── persistence ──────────────────────────────────────────────
-
     def save_state(self, path: str | Path):
-        """Save full trainer state — model weights + optimizer + step + early stopper."""
         self._assert_training_ready()
         torch.save({
             "global_step":   self.global_step,
             "model":         self.state_dict(),
             "optimizer":     self.optimizer.state_dict(),
-            "early_stopper": self.early_stopper.state_dict(),
+            "early_stopper": (
+                self.early_stopper.state_dict()
+                if hasattr(self.early_stopper, "state_dict") else
+                vars(self.early_stopper)   # fallback: save __dict__ directly
+            ),
             "scheduler":     self.scheduler.state_dict() if self.scheduler else None,
         }, path)
         logger.info("Trainer state saved → %s", path)
 
     def load_train(self, path: str | Path):
-        """Resume training — restores step, weights, optimizer, early stopper."""
         self._assert_training_ready()
         ckpt = torch.load(path, map_location=self.device)
         self.global_step = ckpt["global_step"]
         self.load_state_dict(ckpt["model"])
         self.optimizer.load_state_dict(ckpt["optimizer"])
-        self.early_stopper.load_state_dict(ckpt["early_stopper"])
+        if ckpt.get("early_stopper"):
+            if hasattr(self.early_stopper, "load_state_dict"):
+                self.early_stopper.load_state_dict(ckpt["early_stopper"])
+            else:
+                self.early_stopper.__dict__.update(ckpt["early_stopper"])
         if self.scheduler and ckpt.get("scheduler"):
             self.scheduler.load_state_dict(ckpt["scheduler"])
         logger.info("Trainer state loaded ← %s  (step=%d)", path, self.global_step)
 
     @staticmethod
-    def load_weights(path: str | Path, model: nn.Module, map_location: str = "cpu") -> nn.Module:
-        """Load only model weights into an already-constructed model (no training state needed)."""
+    def load_weights(
+        path: str | Path,
+        model: nn.Module,
+        map_location: str = "cpu",
+    ) -> nn.Module:
+        """Load only model weights — no training state needed."""
         ckpt  = torch.load(path, map_location=map_location)
         state = ckpt.get("model", ckpt.get("model_state_dict", ckpt))
         model.load_state_dict(state, strict=True)
         logger.info("Model weights loaded ← %s", path)
         return model
-    

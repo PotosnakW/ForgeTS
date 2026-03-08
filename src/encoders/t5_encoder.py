@@ -130,7 +130,7 @@ class T5Attention(nn.Module): # Default T5Attention copied from HuggingFace for 
         self,
         n_channels,
         hidden_states,
-        mask=None,
+        attention_mask=None,
         key_value_states=None,
         position_bias=None,
         past_key_values=None,
@@ -143,7 +143,7 @@ class T5Attention(nn.Module): # Default T5Attention copied from HuggingFace for 
         Self-attention (if key_value_states is None) or attention over source sentence (provided by key_value_states).
         """
         # Input is (batch_size, seq_length, dim)
-        # Mask is (batch_size, 1, 1, key_length) (non-causal encoder) or (batch_size, 1, seq_length, key_length) (causal decoder)
+        # attention_mask is (batch_size, 1, seq_length, seq_length)
         batch_size, seq_length = hidden_states.shape[:2]
 
         # if key_value_states are provided this layer is used as a cross-attention layer for the decoder
@@ -201,12 +201,9 @@ class T5Attention(nn.Module): # Default T5Attention copied from HuggingFace for 
                 )
                 position_bias = position_bias[:, :, -seq_length:, :]
 
-            if mask is not None:
-                # causal_mask = mask[:, :, :, : key_states.shape[-2]]
-                # position_bias = position_bias + causal_mask
-                mask = mask.view(batch_size, 1, 1, key_states.shape[-2])
-                mask = (1.0 - mask.float()) * -1e9
-                position_bias = position_bias + mask
+            if attention_mask is not None: # [B*C, 1, P, P]
+                attention_mask = (1.0 - attention_mask.float()) * -1e9
+                position_bias = position_bias + attention_mask
 
         position_bias_masked = position_bias
 
@@ -359,7 +356,7 @@ class T5InfiniAttention(T5Attention):
         self,
         n_channels,
         hidden_states,
-        mask=None,
+        attention_mask=None,
         key_value_states=None,
         position_bias=None,
         past_key_values=None,
@@ -372,7 +369,7 @@ class T5InfiniAttention(T5Attention):
         Self-attention (if key_value_states is None) or attention over source sentence (provided by key_value_states).
         """
         # Input is (batch_size, seq_length, dim)
-        # Mask is (batch_size, 1, 1, key_length) (non-causal encoder) or (batch_size, 1, n_patch, key_length) (causal decoder)
+        # attention_mask is (batch_size, 1, seq_length, seq_length)
         # past_key_value[0] is (batch_size, n_heads, q_len - 1, dim_per_head)
         batch_size, seq_length = hidden_states.shape[:2]
 
@@ -455,12 +452,10 @@ class T5InfiniAttention(T5Attention):
                 )
                 position_bias = position_bias[:, :, :, -seq_length:, :]
 
-            if mask is not None:
-                #causal_mask = mask[:, :, :, :, : key_states.shape[-2]]
-                #position_bias = position_bias + causal_mask
-                mask = mask.view(batch_size//n_channels, n_channels, 1, 1, key_states.shape[-2])
-                mask = (1.0 - mask.float()) * -1e9
-                position_bias = position_bias + mask
+            if attention_mask is not None:
+                attention_mask = attention_mask.view(batch_size//n_channels, n_channels, 1, seq_length, seq_length)
+                attention_mask = (1.0 - attention_mask.float()) * -1e9
+                position_bias = position_bias + attention_mask
 
         position_bias_masked = position_bias
 
@@ -540,7 +535,7 @@ class T5LayerSelfAttention(nn.Module):
         attention_output = self.SelfAttention(
             n_channels=n_channels,
             hidden_states=normed_hidden_states,
-            mask=attention_mask,
+            attention_mask=attention_mask,
             position_bias=position_bias,
             past_key_values=past_key_values,
             use_cache=use_cache,
@@ -593,7 +588,7 @@ class T5LayerCrossAttention(nn.Module):
         attention_output = self.EncDecAttention(
             n_channels=n_channels,
             hidden_states=normed_hidden_states,
-            mask=attention_mask,
+            attention_mask=attention_mask,
             key_value_states=key_value_states,
             position_bias=position_bias,
             past_key_values=past_key_values,
@@ -664,30 +659,31 @@ class T5Block(T5Block):
 
         do_cross_attention = self.is_decoder and encoder_hidden_states is not None
         if do_cross_attention:
-            cross_attention_outputs = self.layer[1](
-                n_channels=n_channels,
-                hidden_states=hidden_states,
-                key_value_states=encoder_hidden_states,
-                attention_mask=encoder_attention_mask,
-                position_bias=encoder_decoder_position_bias,
-                past_key_values=past_key_values,
-                query_length=cache_position[-1] + 1,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-            )
-            hidden_states = cross_attention_outputs[0]
+            raise NotImplemented
+            # cross_attention_outputs = self.layer[1](
+            #     n_channels=n_channels,
+            #     hidden_states=hidden_states,
+            #     key_value_states=encoder_hidden_states,
+            #     attention_mask=encoder_attention_mask,
+            #     position_bias=encoder_decoder_position_bias,
+            #     past_key_values=past_key_values,
+            #     query_length=cache_position[-1] + 1,
+            #     use_cache=use_cache,
+            #     output_attentions=output_attentions,
+            # )
+            # hidden_states = cross_attention_outputs[0]
 
-            # clamp inf values to enable fp16 training
-            if hidden_states.dtype == torch.float16:
-                clamp_value = torch.where(
-                    torch.isinf(hidden_states).any(),
-                    torch.finfo(hidden_states.dtype).max - 1000,
-                    torch.finfo(hidden_states.dtype).max,
-                )
-                hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
+            # # clamp inf values to enable fp16 training
+            # if hidden_states.dtype == torch.float16:
+            #     clamp_value = torch.where(
+            #         torch.isinf(hidden_states).any(),
+            #         torch.finfo(hidden_states.dtype).max - 1000,
+            #         torch.finfo(hidden_states.dtype).max,
+            #     )
+            #     hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
 
-            # Keep cross-attention outputs and relative position weights
-            attention_outputs = attention_outputs + cross_attention_outputs[1:]
+            # # Keep cross-attention outputs and relative position weights
+            # attention_outputs = attention_outputs + cross_attention_outputs[1:]
 
         # Apply Feed Forward layer
         hidden_states = self.layer[-1](hidden_states)
@@ -826,7 +822,6 @@ class T5Stack(T5Stack):
             #)
         else:
             assert attention_mask is not None
-            attention_mask = attention_mask
             # attention_mask = create_bidirectional_mask(
             #     config=self.config,
             #     input_embeds=inputs_embeds,
@@ -1040,19 +1035,19 @@ class T5Model(T5Model):
         hidden_states = encoder_outputs[0]
 
         # Decode
-        decoder_outputs = self.decoder(
-            input_ids=decoder_input_ids,
-            attention_mask=decoder_attention_mask,
-            inputs_embeds=decoder_inputs_embeds,
-            past_key_values=past_key_values,
-            encoder_hidden_states=hidden_states,
-            encoder_attention_mask=attention_mask,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-            cache_position=cache_position,
-        )
+        # decoder_outputs = self.decoder(
+        #     input_ids=decoder_input_ids,
+        #     attention_mask=decoder_attention_mask,
+        #     inputs_embeds=decoder_inputs_embeds,
+        #     past_key_values=past_key_values,
+        #     encoder_hidden_states=hidden_states,
+        #     encoder_attention_mask=attention_mask,
+        #     use_cache=use_cache,
+        #     output_attentions=output_attentions,
+        #     output_hidden_states=output_hidden_states,
+        #     return_dict=return_dict,
+        #     cache_position=cache_position,
+        # )
 
         if not return_dict:
             return decoder_outputs + encoder_outputs

@@ -308,3 +308,21 @@ class Transpose(nn.Module):
             return x.transpose(*self.dims).contiguous()
         else:
             return x.transpose(*self.dims)
+
+def _make_causal_token_mask(
+    key_padding_mask: torch.Tensor,  # [B, C, L] — 1/True = VALID, 0/False = INVALID
+    device: torch.device,
+) -> torch.Tensor:
+    B, C, L = key_padding_mask.shape
+
+    # Causal mask: [1, 1, 1, L, L] — 1 where attention is ALLOWED
+    causal_mask = torch.ones(L, L, dtype=torch.float, device=device).tril()
+    causal_mask = causal_mask.view(1, 1, 1, L, L)
+
+    # Token validity: [B, C, 1, 1, L] — 1 = valid key, 0 = invalid key
+    token_mask = key_padding_mask.float().unsqueeze(2).unsqueeze(3)  # [B, C, 1, 1, L]
+
+    # Combine: 0 if EITHER is blocked
+    combined = causal_mask * token_mask  # [B, C, 1, L, L]
+
+    return combined  # [B, C, 1, L, L] — 1=attend, 0=block

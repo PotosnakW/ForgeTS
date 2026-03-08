@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 from ..common._base_model import BaseModel
-from ..common._modules import RevINMultivariate, Flatten_Head, Patching, PositionalEncoding
+from ..common._modules import RevINMultivariate, Flatten_Head, Patching, PositionalEncoding, _mask_causal_token_mask
 from ..encoders.t5_encoder import T5Model
 from ..encoders.tst_encoder import TSTEncoder
 from transformers import T5Config
@@ -84,16 +84,18 @@ class Encoder(nn.Module):
         # dynamic n_patch from actual input (handles variable T for fcd_samples=-1)
         n_patch = (seq_len - self.patch_len) // self.stride + 1
 
-        # build attention mask: [B, n_patch] → [B*C, n_patch]
+        # build attention mask: [B, C, n_patch]
         if available_mask is not None:
             # unfold matches tokenizer: [B, seq_len] → [B, n_patch, patch_len]
             patch_avail    = available_mask.unfold(1, self.patch_len, self.stride)
-            patch_mask     = patch_avail.any(dim=-1).float()            # [B, n_patch]
-            attention_mask = patch_mask.repeat_interleave(n_channels, dim=0)  # [B*C, n_patch]
+            patch_mask     = patch_avail.any(dim=-1).float()          # [B, n_patch]
+            key_padding_mask = patch_mask.unsqueeze(1).expand(-1, n_channels, -1)  # [B, C, n_patch]
         else:
-            attention_mask = torch.ones(
-                batch_size * n_channels, n_patch, device=x_enc.device
+            key_padding_mask = torch.ones(
+                batch_size, n_channels, n_patch, device=x_enc.device
             )
+        attention_mask = _make_causal_token_mask(key_padding_mask=key_padding_mask, device=x_enc.device()) # [B, C, 1, n_patch, n_patch]
+        attention_mask = attention_mask.reshape(batch_size * n_channels, n_patch) # [B * C, 1, n_patch, n_patch]
 
         x_enc  = self.tokenizer(x=x_enc)          # [B, C, n_patch, patch_len]
         x_enc  = self.W_P(x_enc)                  # [B, C, n_patch, d_model]
@@ -104,8 +106,8 @@ class Encoder(nn.Module):
         x_enc  = self.dropout(x_enc)
 
         outputs = self.encoder(
-            n_channels     = n_channels,
-            inputs_embeds  = x_enc,
+            n_channels = n_channels,
+            inputs_embeds = x_enc,
             attention_mask = attention_mask,
         )
         enc_out = outputs.last_hidden_state  # [B*C, n_patch, d_model]

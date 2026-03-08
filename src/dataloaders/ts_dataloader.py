@@ -62,27 +62,7 @@ def _split_df(
     if not pd.api.types.is_datetime64_any_dtype(df["ds"]):
         df["ds"] = pd.to_datetime(df["ds"])
     df = df.sort_values(["unique_id", "ds"])
-    if per_series_split:
-        return _split_per_series(df, val_size, test_size)
-    return _split_by_timestamp(df, val_size, test_size)
-
-
-def _split_by_timestamp(df, val_size, test_size):
-    all_times = df["ds"].drop_duplicates().sort_values().reset_index(drop=True)
-    T = len(all_times)
-    if val_size + test_size >= T:
-        raise ValueError(
-            f"val_size ({val_size}) + test_size ({test_size}) = {val_size + test_size} "
-            f">= total timestamps ({T})."
-        )
-    train_end = all_times.iloc[T - val_size - test_size - 1]
-    val_end   = all_times.iloc[T - test_size - 1]
-    return (
-        df[df["ds"] <= train_end],
-        df[(df["ds"] > train_end) & (df["ds"] <= val_end)],
-        df[df["ds"] > val_end],
-    )
-
+    return _split_per_series(df, val_size, test_size)
 
 def _split_per_series(df, val_size, test_size):
     def label(g):
@@ -103,7 +83,6 @@ def _split_per_series(df, val_size, test_size):
         df[df["_split"] == "val"].drop(columns="_split"),
         df[df["_split"] == "test"].drop(columns="_split"),
     )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pivot → arrays
@@ -522,6 +501,9 @@ class DataLoaderFactory:
         self._horizon_groups: Dict[int, list]   = defaultdict(list)
         self._build_train()
 
+        seed = getattr(self.mcfg, "seed", 42)
+        self._val_rng = np.random.default_rng(seed)
+
     def _arrays_from_df(self, df, entry):
         return _pivot_to_arrays(
             df, entry.hist_exog_cols, entry.futr_exog_cols, entry.stat_exog_cols
@@ -686,24 +668,24 @@ class DataLoaderFactory:
             collate_fn         = _full_series_collate_fn,
             persistent_workers = self.mcfg.num_workers > 0,
         )
-    def val_dataloaders(self) -> Dict[str, DataLoader]:
+
+    def val_dataloaders(self, epoch: int = 0) -> Dict[str, DataLoader]:
         strategy = getattr(self.mcfg, "val_strategy", "exhaustive")
+        rng = np.random.default_rng(int(self._val_rng.integers(2**32)) + epoch)
 
         if strategy == "exhaustive":
             return {"val": self._make_eval_dataloader(self.dcfg.validation, "val")}
 
         elif strategy == "random_datasets":
-            # Option A — pick K random datasets, full series each
             k       = getattr(self.mcfg, "val_max_datasets", len(self.dcfg.validation))
-            entries = random.sample(self.dcfg.validation, min(k, len(self.dcfg.validation)))
-            return {"val": self._make_eval_dataloader(entries, "val")}
+            indices = rng.choice(len(self.dcfg.validation), size=min(k, len(self.dcfg.validation)), replace=False)
+            entries = [self.dcfg.validation[i] for i in indices]
 
         elif strategy == "stratified":
-            # Option C — one random entry per horizon group
             horizon_groups = defaultdict(list)
             for entry in self.dcfg.validation:
                 horizon_groups[entry.horizon].append(entry)
-            entries = [random.choice(group) for group in horizon_groups.values()]
+            entries = [group[int(rng.integers(len(group)))] for group in horizon_groups.values()]
             return {"val": self._make_eval_dataloader(entries, "val")}
 
         else:

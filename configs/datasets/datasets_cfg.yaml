@@ -11,7 +11,6 @@ train:
     hist_exog_cols: [CHO, insulin]
     #futr_exog_cols: []
     #stat_exog_cols: [region_id, store_type] # TODO @wpotosna
-    per_series_split: False # Whether to split train/val/test based on timestpe (False) or unique per series (True)
 
 # -----------------------------------------------------------
 # ------------------- Validation datasets -------------------
@@ -26,8 +25,7 @@ validation:
     hist_exog_cols: [CHO, insulin]
     #futr_exog_cols: []
     #stat_exog_cols: [region_id, store_type] # TODO @wpotosna
-    per_series_split: False # Whether to split train/val/test based on timestpe (False) or unique per series (True)
-
+  
 # -----------------------------------------------------------
 # ---------------------- Test datasets ----------------------
 # -----------------------------------------------------------
@@ -41,4 +39,3 @@ test:
     hist_exog_cols: [CHO, insulin]
     #futr_exog_cols: []
     #stat_exog_cols: [region_id, store_type] # TODO @wpotosna
-    per_series_split: False # Whether to split train/val/test based on timestpe (False) or unique per series (True)

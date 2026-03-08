@@ -1,28 +1,37 @@
-# TSFM — Time Series Foundation Model Pipeline
+# TSFM &nbsp;·&nbsp; Time Series Foundation Model Pipeline
 
-A PyTorch training pipeline for multivariate time series forecasting, built around **Forking Sequence (FCD) training** and designed to scale from a single GPU to distributed multi-node training.
+> A PyTorch training pipeline for multivariate time series forecasting, built around **Forking Sequence (FCD) training** and designed to scale from a single GPU to distributed multi-node training.
+
+<br>
 
 ---
+
+<br>
 
 ## Table of Contents
 
-- [Core Concepts](#core-concepts)
-- [Project Layout](#project-layout)
-- [Data Config](#data-config)
-- [Model Config](#model-config)
-- [Dataloading](#dataloading)
-- [Forking Sequences](#forking-sequences)
-- [Sharded Datasets](#sharded-datasets)
-- [Training](#training)
-- [Distributed Training](#distributed-training)
-- [Validation Strategies](#validation-strategies)
-- [Loss Functions](#loss-functions)
-- [Inference & Predictions](#inference--predictions)
-- [Quick Start](#quick-start)
+| | Section |
+|---|---|
+| 1 | [Core Concepts](#core-concepts) |
+| 2 | [Quick Start](#quick-start) |
+| 3 | [Dataloaders](#dataloaders) |
+| 4 | [Forking Sequences](#forking-sequences) |
+| 5 | [Training](#training) |
+| 6 | [Validation Strategies](#validation-strategies) |
+| 7 | [Distributed Training](#distributed-training) |
+| 8 | [Data Sharding](#data-sharding) |
+| 9 | [Inference & Predictions](#inference--predictions) |
+| 10 | [License](#license) |
+
+<br>
 
 ---
 
+<br>
+
 ## Core Concepts
+
+<br>
 
 ### Forking Sequence Training (FCD)
 
@@ -34,15 +43,22 @@ anchor →  [───── context (L) ─────][── horizon (H) ─
                 step →  [───── context ─────][── horizon ──]   FCD 2
 ```
 
-- **Training**: `fcd_samples > 1` — `heterogeneous_sampler` picks a random valid anchor per series
-- **Val / Test**: `fcd_samples = -1` — full series, all valid FCD windows exhausted
+| Mode | `fcd_samples` | Behaviour |
+|---|---|---|
+| Training | `> 1` | `heterogeneous_sampler` picks a random valid anchor per series |
+| Val / Test | `-1` | Full series — all valid FCD windows exhausted |
+
+<br>
 
 ### Heterogeneous Batching
 
 Multiple datasets with different numbers of channels, series lengths, and missing data patterns can be combined in a single batch. The collation layer:
+
 - **Left-pads** time to the longest series in the batch
 - **Right-pads** channels to `C_max` with zeros
 - **`available_mask [B, C, T]`** encodes both padding and mid-series gaps — zero means "don't use this element"
+
+<br>
 
 ### Foundation Model Design
 
@@ -50,332 +66,11 @@ Multiple datasets with different numbers of channels, series lengths, and missin
 - Weighted mixing controls dataset influence during training
 - `outsample_mask` propagates through `fork_sequences` so loss is only computed over real, observed timesteps — padded channels and missing values are automatically excluded
 
----
-
-## Project Layout
-
-```
-src/
-├── dataloaders/
-│   ├── _forking_sequences.py   # fork_sequences, heterogeneous_sampler, n_valid_fcds
-│   ├── ts_dataloader.py        # FullSeriesDataset, DataLoaderFactory, HorizonBatchSampler
-│   └── ts_sharding.py          # write_sharded_dataset, ShardedTrain/Val/TestDataset
-└── common/
-    ├── _base_model.py          # BaseModel — training loop, val loop, predict
-    ├── train.py                # train(), train_distributed(), eval_test()
-    ├── losses.py               # mse_loss, mae_loss, quantile_loss (all mask-aware)
-    └── utils.py                # EarlyStopper
-```
+<br>
 
 ---
 
-## Data Config
-
-```yaml
-train:
-  - path: "../datasets/simglucose_90_days.csv"
-    name: "simglucose"
-    horizon: 6
-    val_size: 2592        # timesteps reserved for validation
-    test_size: 2592       # timesteps reserved for test
-    weight: 1.0           # relative sampling weight during training
-    hist_exog_cols: [CHO, insulin]
-    per_series_split: False
-```
-
-Multiple datasets are listed as separate entries under `train`, `validation`, and `test`. Each entry can have a different horizon, weight, and exogenous feature set.
-
-### Splitting
-
-`per_series_split: False` — global time split (default for most time series):
-```
-[──────── train ────────][── val ──][── test ──]
-         T - val - test     val       test
-```
-
-`per_series_split: True` — each unique_id gets its own split boundary (for panel data where series have independent timelines).
-
----
-
-## Model Config
-
-```yaml
-# Architecture
-context_length: 512
-input_size: 512
-
-# Training loop
-max_steps: 10000
-val_check_interval: 500
-early_stopping_patience: 10
-fcd_samples: 4             # 1 = single window, >1 = forking sequences
-
-# Loss
-loss: "quantile"           # mse | mae | quantile
-quantiles: [0.1, 0.5, 0.9]
-
-# Optimiser
-learning_rate: 1e-3
-gradient_clip_val: 1.0
-
-# Batching
-batch_size: 32
-valid_batch_size: 32
-mixing_strategy: "concat"  # concat | round_robin
-drop_last: False
-
-# Validation strategy
-val_strategy: "exhaustive"       # exhaustive | random_datasets | stratified
-val_max_datasets: 4              # used by random_datasets only
-
-# Misc
-normalize: False
-num_workers: 4
-checkpoint_dir: "checkpoints/"
-checkpoint_step: 1000
-```
-
----
-
-## Dataloading
-
-### `DataLoaderFactory`
-
-Central object that owns all dataset construction and dataloader creation.
-
-```python
-factory      = DataLoaderFactory(mcfg, dcfg)
-train_loader = factory.train_dataloader()
-val_loaders  = factory.val_dataloaders()   # {"val": DataLoader}
-test_loaders = factory.test_dataloaders()  # {"test": DataLoader}
-```
-
-### `HorizonBatchSampler`
-
-Groups datasets by horizon so all items in a batch share the same `H`. This is required for models that do autoregressive rollouts — each batch must have a consistent forecast length.
-
-**Mixing strategies:**
-
-| Strategy | Behaviour |
-|---|---|
-| `concat` | All datasets pooled together, sampled by weight |
-| `round_robin` | Horizons interleaved — one batch per horizon per round |
-
-**Weights** control how often each dataset appears relative to others. A dataset with `weight: 3.0` gets 3× more batches than one with `weight: 1.0`.
-
-### `FullSeriesDataset`
-
-Each dataset is a single item (`__len__ == 1`) — the entire series delivered to the model in one shot. `fork_sequences` handles all windowing inside the model's `_prepare_batch`. This means:
-
-- No fixed window size baked into the dataset
-- `context_length` can be changed at inference time without reloading data
-- Heterogeneous series lengths are handled by left-padding at collation
-
----
-
-## Forking Sequences
-
-```python
-from dataloaders._forking_sequences import fork_sequences, n_valid_fcds
-
-# Training: sample fcd_samples windows per series
-out = fork_sequences(batch, context_length=512, fcd_samples=4, horizon=6)
-
-# Val/Test: all valid windows
-out = fork_sequences(batch, context_length=512, fcd_samples=-1, horizon=6)
-```
-
-**Outputs:**
-
-| Key | Shape | Description |
-|---|---|---|
-| `insample_y` | `[B, enc_size, C, 1+Vh]` | Encoder input (context + hist exog) |
-| `outsample_y` | `[B, n_fcds, H, C]` | Forecast targets |
-| `outsample_mask` | `[B, n_fcds, H, C]` | 1 = real, 0 = missing/padded |
-| `available_mask` | `[B, C, enc_size]` | Encoder availability mask |
-
-`outsample_mask` is derived directly from `available_mask` — any timestep or channel that is missing in the encoder context will also be masked in the targets. This flows into the loss functions automatically.
-
----
-
-## Sharded Datasets
-
-For datasets too large to fit in RAM, `write_sharded_dataset` partitions data into time-blocked parquet files with configurable shard size.
-
-```python
-from dataloaders.ts_sharding import write_sharded_dataset
-
-write_sharded_dataset(
-    df             = full_df,          # long-format DataFrame, must have 'available_mask'
-    out_dir        = "data/sharded/simglucose",
-    val_size       = 2592,             # matches dcfg entry val_size
-    test_size      = 2592,             # matches dcfg entry test_size
-    context_length = 512,              # L — baked into shard overlap
-    shard_size     = 5_000,            # train timesteps per file
-    hist_exog_cols = ["CHO", "insulin"],
-)
-```
-
-**Disk layout:**
-```
-out_dir/
-    shard_000000.parquet   # t=[0, shard_size+L)
-    shard_000001.parquet   # t=[shard_size, 2*shard_size+L)   ← L-row overlap
-    ...
-    val.parquet            # t=[train_end-L, val_end)          ← context head from train
-    test.parquet           # t=[val_end-L, T_total)            ← context head from val
-    static.parquet         # per-channel static features
-    metadata.json          # split boundaries, schema, shard index
-```
-
-The **L-row right-edge overlap** on each train shard means windows near shard boundaries are self-contained — no cross-file reads needed.
-
-To use sharded data, add `sharded_dir` to the dcfg entry:
-
-```python
-entry = make_entry(
-    path        = "data/simglucose.csv",   # still used for test fallback
-    name        = "simglucose",
-    sharded_dir = "data/sharded/simglucose",
-)
-```
-
----
-
-## Training
-
-### Single GPU
-
-```python
-from common.train import train, eval_test
-
-factory      = DataLoaderFactory(mcfg, dcfg)
-train_loader = factory.train_dataloader()
-val_loaders  = factory.val_dataloaders()
-
-metrics = train(model, mcfg, train_loader, val_loaders, device=torch.device("cuda"))
-
-# Test inference
-results = eval_test(model, factory, device=torch.device("cuda"))
-```
-
-### Resume from Checkpoint
-
-```python
-metrics = train(model, mcfg, train_loader, val_loaders,
-                resume="checkpoints/final.pt")
-```
-
-### BaseModel Subclassing
-
-```python
-class MyModel(BaseModel):
-    def __init__(self, config):
-        super().__init__()
-        self.encoder = TransformerEncoder(config)
-        self.decoder = MLPDecoder(config)
-
-    def forward(self, batch):
-        # batch keys: insample_y, outsample_y, outsample_mask, available_mask
-        x = batch["insample_y"]           # [B, enc_size, C, 1+Vh]
-        return self.decoder(self.encoder(x))  # [B, n_fcds, H, C]
-
-model = MyModel(config)
-model.setup_training(mcfg, train_loader, val_loaders)
-model.fit()
-```
-
-Only `forward` is required. `compute_loss`, `train_step`, `val_step`, and `predict_step` all have sensible defaults and can be overridden selectively.
-
----
-
-## Distributed Training
-
-Uses PyTorch DDP via `mp.spawn`. Sharded datasets are the recommended backend — each rank loads a non-overlapping subset of shard files.
-
-```python
-from common.train import train_distributed, eval_test
-
-train_distributed(
-    model      = model,
-    mcfg       = mcfg,
-    factory    = factory,       # built before spawn, rebuilt per rank inside
-    backend    = "nccl",        # "gloo" for CPU
-    world_size = 4,
-    seed       = 42,
-)
-
-# Test always runs single-GPU after distributed context is destroyed
-results = eval_test(model, factory, device=torch.device("cuda:0"))
-```
-
-**Shard assignment:** `files[rank::world_size]` — strided for balanced time coverage across ranks.
-
-**Validation in distributed mode:** Every rank evaluates the full val set independently (same data, different model weights). Losses are all-reduced and averaged for the global metric. Only rank 0 logs and saves checkpoints.
-
----
-
-## Validation Strategies
-
-Controlled by `mcfg.val_strategy`:
-
-| Strategy | Behaviour | Best for |
-|---|---|---|
-| `exhaustive` | Full pass over all val datasets every check | Final evaluation, small dataset counts |
-| `random_datasets` | K random datasets per val check (`val_max_datasets`) | Many datasets, preventing overfitting |
-| `stratified` | One random dataset per horizon group | Fast convergence signal across all horizons |
-
-```yaml
-val_strategy: "stratified"    # fast training feedback
-# val_strategy: "random_datasets"
-# val_max_datasets: 4
-```
-
-Test always uses exhaustive evaluation regardless of `val_strategy`.
-
----
-
-
-## Inference & Predictions
-
-```python
-results = eval_test(model, factory, device=torch.device("cuda"))
-```
-
-Returns a nested dict keyed by dataset name, ready to pickle:
-
-```python
-{
-    "simglucose": {
-        "channel_ids":    ["patient_001", "patient_002", ...],  # unique_ids
-        "preds":          Tensor,   # [n_fcds, H, C]
-        "targets":        Tensor,   # [n_fcds, H, C]
-        "outsample_mask": Tensor,   # [n_fcds, H, C]  1=real, 0=missing
-    }
-}
-
-# Save
-import pickle
-with open("results.pkl", "wb") as f:
-    pickle.dump(results, f)
-
-# Access per channel
-for i, uid in enumerate(results["simglucose"]["channel_ids"]):
-    preds_i  = results["simglucose"]["preds"][:, :, i]    # [n_fcds, H]
-    mask_i   = results["simglucose"]["outsample_mask"][:, :, i]
-```
-
-Use `outsample_mask` when computing metrics to exclude missing ground truth:
-
-```python
-preds  = results["simglucose"]["preds"]           # [n_fcds, H, C]
-targets = results["simglucose"]["targets"]
-mask   = results["simglucose"]["outsample_mask"]
-
-mae = (torch.abs(preds - targets) * mask).sum() / mask.sum()
-```
-
----
+<br>
 
 ## Quick Start
 
@@ -398,6 +93,7 @@ mcfg = SimpleNamespace(
     early_stopping_patience=10, drop_last=False,
     valid_batch_size=32,
 )
+
 dcfg = SimpleNamespace(
     train=[SimpleNamespace(
         path="data/simglucose.csv", name="simglucose",
@@ -419,9 +115,411 @@ val_loaders  = factory.val_dataloaders()
 model = MyModel(mcfg)
 
 # 4. Train
-metrics = train(model, mcfg, train_loader, val_loaders,
-                device=torch.device("cuda"))
+metrics = train(model, mcfg, train_loader, val_loaders, device=torch.device("cuda"))
 
 # 5. Predict
 results = eval_test(model, factory, device=torch.device("cuda"))
 ```
+
+<br>
+
+---
+
+<br>
+
+## Dataloaders
+
+<br>
+
+### Dataset Config
+
+Dataset configs define paths, train/val/test splits, exogenous features, and per-dataset sampling weights. Multiple datasets can be listed as separate entries under `train`, `validation`, and `test`.
+
+```yaml
+train:
+  - path: "../datasets/simglucose_90_days.csv"
+    name: "simglucose"
+    horizon: 6
+    val_size: 2592        # timesteps reserved for validation
+    test_size: 2592       # timesteps reserved for test
+    weight: 1.0           # relative sampling weight during training
+    hist_exog_cols: [CHO, insulin]
+    per_series_split: False
+```
+
+<br>
+
+**Splitting modes:**
+
+`per_series_split: False` — global time split (default):
+```
+[──────────── train ────────────][──── val ────][──── test ────]
+            T - val - test              val             test
+```
+
+`per_series_split: True` — each `unique_id` gets its own split boundary, for panel data where series have independent timelines.
+
+<br>
+
+### DataLoaderFactory
+
+Central object that owns all dataset construction and dataloader creation.
+
+```python
+factory      = DataLoaderFactory(mcfg, dcfg)
+train_loader = factory.train_dataloader()
+val_loaders  = factory.val_dataloaders()   # {"val": DataLoader}
+test_loaders = factory.test_dataloaders()  # {"test": DataLoader}
+```
+
+<br>
+
+### FullSeriesDataset
+
+Each dataset is a single item (`__len__ == 1`) — the entire series delivered to the model in one shot. `fork_sequences` handles all windowing inside `_prepare_batch`. This means:
+
+- No fixed window size baked into the dataset
+- `context_length` can be changed at inference time without reloading data
+- Heterogeneous series lengths are handled by left-padding at collation
+
+<br>
+
+### HorizonBatchSampler
+
+Groups datasets by horizon so all items in a batch share the same `H`. Required for autoregressive rollouts — each batch must have a consistent forecast length.
+
+| Strategy | Behaviour |
+|---|---|
+| `concat` | All datasets pooled together, sampled by weight |
+| `round_robin` | Horizons interleaved — one batch per horizon per round |
+
+> Dataset `weight` controls relative sampling frequency. A dataset with `weight: 3.0` gets 3× more batches than one with `weight: 1.0`.
+
+<br>
+
+---
+
+<br>
+
+## Forking Sequences
+
+```python
+from dataloaders._forking_sequences import fork_sequences, n_valid_fcds
+
+# Training — sample fcd_samples windows per series
+out = fork_sequences(batch, context_length=512, fcd_samples=4, horizon=6)
+
+# Val / Test — all valid windows, no sampling
+out = fork_sequences(batch, context_length=512, fcd_samples=-1, horizon=6)
+```
+
+<br>
+
+### Outputs
+
+| Key | Shape | Description |
+|---|---|---|
+| `insample_y` | `[B, enc_size, C, 1+Vh]` | Encoder input — context window + historical exogenous |
+| `outsample_y` | `[B, n_fcds, H, C]` | Forecast targets |
+| `outsample_mask` | `[B, n_fcds, H, C]` | `1` = real, `0` = missing / padded |
+| `available_mask` | `[B, C, enc_size]` | Encoder availability mask |
+
+`outsample_mask` is derived directly from `available_mask` — any timestep or channel missing in the encoder context is also masked in the targets, flowing into loss functions automatically.
+
+<br>
+
+### FCD Count
+
+In both training and eval modes the number of complete windows produced is:
+
+```
+n_fcds = floor((enc_block_len - L - H) / step) + 1
+```
+
+Incomplete trailing windows are always dropped — the last FCD horizon never extends beyond available data.
+
+<br>
+
+### heterogeneous_sampler
+
+Called during training (`fcd_samples != -1`) to pick one `window_start` per series. A timestep is only valid if **all channels** have real data there — this naturally skips left-padding and mid-series gaps. Sampling is via `torch.multinomial` so each series gets an independent draw.
+
+<br>
+
+---
+
+<br>
+
+## Training
+
+<br>
+
+### Model Config
+
+```yaml
+# ── Architecture ──────────────────────────────
+context_length: 512
+input_size: 512
+
+# ── Training loop ─────────────────────────────
+max_steps: 10000
+val_check_interval: 500
+early_stopping_patience: 10
+fcd_samples: 4             # 1 = single window, >1 = forking sequences
+
+# ── Loss ──────────────────────────────────────
+loss: "quantile"           # mse | mae | quantile
+quantiles: [0.1, 0.5, 0.9]
+
+# ── Optimiser ─────────────────────────────────
+learning_rate: 1e-3
+gradient_clip_val: 1.0
+
+# ── Batching ──────────────────────────────────
+batch_size: 32
+valid_batch_size: 32
+mixing_strategy: "concat"  # concat | round_robin
+drop_last: False
+
+# ── Validation ────────────────────────────────
+val_strategy: "exhaustive"       # exhaustive | random_datasets | stratified
+val_max_datasets: 4              # used by random_datasets only
+
+# ── Misc ──────────────────────────────────────
+normalize: False
+num_workers: 4
+checkpoint_dir: "checkpoints/"
+checkpoint_step: 1000
+```
+
+<br>
+
+### Single GPU
+
+```python
+from common.train import train, eval_test
+
+metrics = train(model, mcfg, train_loader, val_loaders, device=torch.device("cuda"))
+results = eval_test(model, factory, device=torch.device("cuda"))
+```
+
+<br>
+
+### Resuming from Checkpoint
+
+```python
+metrics = train(model, mcfg, train_loader, val_loaders, resume="checkpoints/final.pt")
+```
+
+<br>
+
+### BaseModel Subclassing
+
+Only `forward` is required. `compute_loss`, `train_step`, `val_step`, and `predict_step` all have sensible defaults and can be overridden selectively.
+
+```python
+class MyModel(BaseModel):
+    def __init__(self, config):
+        super().__init__()
+        self.encoder = TransformerEncoder(config)
+        self.decoder = MLPDecoder(config)
+
+    def forward(self, batch):
+        # batch keys: insample_y, outsample_y, outsample_mask, available_mask
+        x = batch["insample_y"]               # [B, enc_size, C, 1+Vh]
+        return self.decoder(self.encoder(x))  # [B, n_fcds, H, C]
+
+model = MyModel(config)
+model.setup_training(mcfg, train_loader, val_loaders)
+model.fit()
+```
+
+<br>
+
+---
+
+<br>
+
+## Validation Strategies
+
+Controlled by `mcfg.val_strategy`:
+
+| Strategy | Behaviour | Best for |
+|---|---|---|
+| `exhaustive` | Full pass over all val datasets every check | Final evaluation, small dataset counts |
+| `random_datasets` | K random datasets per check (`val_max_datasets`) | Many datasets, preventing val overfitting |
+| `stratified` | One random dataset per horizon group | Fast convergence signal across all horizons |
+
+> Test always uses `exhaustive` evaluation regardless of `val_strategy`.
+
+<br>
+
+---
+
+<br>
+
+## Distributed Training
+
+Uses PyTorch DDP via `torchrun` or `mp.spawn`. Sharded datasets are the recommended backend — each rank loads a non-overlapping subset of shard files.
+
+<br>
+
+### Launch
+
+**torchrun** (recommended):
+```bash
+torchrun --nproc_per_node=4 train_script.py
+```
+
+**mp.spawn** (programmatic, single-machine):
+```python
+from common.train import train_distributed
+
+train_distributed(model, mcfg, factory, use_spawn=True, world_size=4)
+results = eval_test(model, factory)
+```
+
+<br>
+
+### Data Strategy
+
+| Phase | Behaviour |
+|---|---|
+| **Training** | Each rank receives a non-overlapping contiguous slice of every horizon group's pool. Padding ensures identical batch counts across ranks — required by DDP's barrier synchronisation. |
+| **Validation** | Every rank evaluates the full val set independently (same data, different model weights). Losses are all-reduced and averaged for the global metric. Only rank 0 logs and saves checkpoints. |
+| **Test** | Always single GPU, always after `dist.destroy_process_group()`. Call `eval_test()` outside of any distributed context. |
+
+<br>
+
+### Shard Assignment
+
+```python
+files[rank::world_size]  # strided for balanced time coverage across ranks
+```
+
+<br>
+
+---
+
+<br>
+
+## Data Sharding
+
+For datasets too large to fit in RAM, `write_sharded_dataset` partitions data into time-blocked parquet files with configurable shard size.
+
+<br>
+
+### Writing Shards
+
+```python
+from dataloaders.ts_sharding import write_sharded_dataset
+
+write_sharded_dataset(
+    df             = full_df,           # long-format DataFrame — must have 'available_mask'
+    out_dir        = "data/sharded/simglucose",
+    val_size       = 2592,              # matches dcfg entry val_size
+    test_size      = 2592,              # matches dcfg entry test_size
+    context_length = 512,               # L — baked into shard overlap
+    shard_size     = 5_000,             # train timesteps per file
+    hist_exog_cols = ["CHO", "insulin"],
+)
+```
+
+<br>
+
+### Disk Layout
+
+```
+out_dir/
+    shard_000000.parquet   # t = [0,          shard_size + L)
+    shard_000001.parquet   # t = [shard_size,  2·shard_size + L)   ← L-row overlap
+    ...
+    val.parquet            # t = [train_end - L,  val_end)
+    test.parquet           # t = [val_end - L,    T_total)
+    static.parquet         # per-channel static features
+    metadata.json          # split boundaries, schema, shard index
+```
+
+The **L-row right-edge overlap** on each train shard means windows near shard boundaries are self-contained — no cross-file reads needed.
+
+<br>
+
+### Using Sharded Data
+
+Add `sharded_dir` to your dcfg entry:
+
+```python
+entry = make_entry(
+    path        = "data/simglucose.csv",
+    name        = "simglucose",
+    sharded_dir = "data/sharded/simglucose",
+)
+```
+
+The factory automatically uses `ShardedTrainDataset`, `ShardedValDataset`, and `ShardedTestDataset` when `sharded_dir` is present.
+
+<br>
+
+---
+
+<br>
+
+## Inference & Predictions
+
+```python
+results = eval_test(model, factory, device=torch.device("cuda"))
+```
+
+Returns a nested dict keyed by dataset name:
+
+```python
+{
+    "simglucose": {
+        "channel_ids":    ["patient_001", "patient_002", ...],
+        "preds":          Tensor,   # [n_fcds, H, C]
+        "targets":        Tensor,   # [n_fcds, H, C]
+        "outsample_mask": Tensor,   # [n_fcds, H, C]   1 = real, 0 = missing
+    }
+}
+```
+
+<br>
+
+Use `outsample_mask` when computing metrics to exclude missing ground truth:
+
+```python
+preds   = results["simglucose"]["preds"]
+targets = results["simglucose"]["targets"]
+mask    = results["simglucose"]["outsample_mask"]
+
+mae = (torch.abs(preds - targets) * mask).sum() / mask.sum()
+```
+
+Per-channel access:
+
+```python
+for i, uid in enumerate(results["simglucose"]["channel_ids"]):
+    preds_i = results["simglucose"]["preds"][:, :, i]          # [n_fcds, H]
+    mask_i  = results["simglucose"]["outsample_mask"][:, :, i]
+```
+
+<br>
+
+---
+
+<br>
+
+
+## License
+
+MIT License
+
+Copyright (c) 2024 Auton Lab, Carnegie Mellon University
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+See [MIT LICENSE](https://github.com/mononitogoswami/labelerrors/blob/main/LICENSE) for details.

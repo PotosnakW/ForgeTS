@@ -1,38 +1,3 @@
-"""
-base_model.py
-─────────────
-BaseModel is an nn.Module that also owns the training loop.
-
-Two-phase construction
-──────────────────────
-Subclasses only need their own architecture args in __init__.
-Training state is attached lazily via setup_training() before fit().
-
-    class MyModel(BaseModel):
-        def __init__(self, config):
-            super().__init__()
-            self.encoder = Encoder(config)
-
-        def forward(self, batch):
-            ...
-
-    model = MyModel(config)
-    model.setup_training(mcfg, train_loader, val_loaders)
-    model.fit()
-
-train vs val/test batch preparation
-─────────────────────────────────────
-_prepare_batch checks self.training (set by self.train() / self.eval()):
-
-    Training  → fcd_samples from mcfg  (random anchor sampling via heterogeneous_sampler)
-    Val/test  → fcd_samples = -1        (full series, all windows, no random sampling)
-
-This means val and test always produce predictions for every valid FCD window
-in the series, which is what you want for evaluation metrics.
-"""
-
-from __future__ import annotations
-
 import logging
 import random
 import time
@@ -46,6 +11,8 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.utils.data import DataLoader
+import torch.distributed as dist
+from tqdm import tqdm
 
 from .utils import EarlyStopper
 from dataloaders._forking_sequences import fork_sequences
@@ -127,6 +94,8 @@ class BaseModel(nn.Module):
     def __init__(self):
         super().__init__()
         self._training_ready = False
+        self._rank = 0
+        self._world_size = 1
 
     @abstractmethod
     def forward(self, batch: Dict[str, Tensor]) -> Tensor:
@@ -243,7 +212,9 @@ class BaseModel(nn.Module):
         batch = self._prepare_batch(raw_batch)
 
         self.optimizer.zero_grad(set_to_none=True)
-        pred = self(batch)
+        #pred = self(batch)
+        fwd  = self.__dict__.get('_ddp_model', self)
+        pred = fwd(batch)
         loss = self.compute_loss(pred, batch)
         loss.backward()
         nn.utils.clip_grad_norm_(self.parameters(), self.mcfg.gradient_clip_val)
@@ -298,7 +269,7 @@ class BaseModel(nn.Module):
             self.to(device)
 
         results = {}
-        for raw_batch in loader:
+        for raw_batch in tqdm(loader, desc="Predicting"):
             step          = self.predict_step(raw_batch)
             pred          = step["pred"]
             targets       = step["targets"]
@@ -351,12 +322,11 @@ class BaseModel(nn.Module):
         final_metrics: Dict[str, Dict[str, float]] = {}
         t0 = time.time()
 
+        pbar = tqdm(total=self.mcfg.max_steps, initial=self.global_step, desc="Training")
         while self.global_step < self.mcfg.max_steps:
             train_loss = self.train_step(next(train_iter))
             self.global_step += 1
 
-            # All-reduce train loss across ranks so rank 0 logs the global mean.
-            # This is a no-op in single-process training (_world_size == 1).
             if self._world_size > 1:
                 t = torch.tensor(train_loss, device=self.device)
                 dist.all_reduce(t, op=dist.ReduceOp.SUM)
@@ -368,14 +338,6 @@ class BaseModel(nn.Module):
                 loss      = train_loss,
             )
 
-            log_every = max(1, self.mcfg.val_check_interval // 10)
-            if self.global_step % log_every == 0:
-                sps = self.global_step / (time.time() - t0)
-                logger.info(
-                    "step %8d / %d  train_loss=%.4f  (%.1f steps/s)",
-                    self.global_step, self.mcfg.max_steps, train_loss, sps,
-                )
-
             if self.global_step % self.mcfg.val_check_interval == 0:
                 val_metrics   = self.validate()
                 final_metrics = val_metrics
@@ -386,13 +348,22 @@ class BaseModel(nn.Module):
                         self.mcfg.monitor_metric,
                         val_metrics[primary].get("loss", float("nan")),
                     )
+                    pbar.set_postfix({
+                        "train": f"{train_loss:.4f}",
+                        "val":   f"{monitor_val:.4f}",
+                    })
                     if self.early_stopper.step(monitor_val):
                         logger.info(
                             "Early stopping at step %d (best=%.4f)",
                             self.global_step, self.early_stopper.best,
                         )
                         break
+            else:
+                pbar.set_postfix({"train": f"{train_loss:.4f}"})
 
+            pbar.update(1)
+
+        pbar.close()
         return final_metrics
 
     def save_state(self, path: str | Path):
@@ -437,3 +408,15 @@ class BaseModel(nn.Module):
         model.load_state_dict(state, strict=True)
         logger.info("Model weights loaded ← %s", path)
         return model
+
+    def setup_inference(
+        self,
+        mcfg,
+        device: Optional[torch.device] = None,
+    ) -> "BaseModel":
+        self.mcfg   = mcfg
+        self.device = device or (
+            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
+        self.to(self.device)
+        return self

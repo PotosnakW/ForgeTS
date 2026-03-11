@@ -421,10 +421,11 @@ class _ShardedEvalDataset(Dataset):
     fork_sequences with fcd_samples=-1 produces all valid FCD windows.
     """
     def __init__(self, data_dir: str, filename: str,
-                 context_length: int, horizon: int):
+             context_length: int, horizon: int, name: str = ""):
         self.data_dir = Path(data_dir)
-        self.ctx      = context_length
-        self.horizon  = horizon
+        self.ctx = context_length
+        self.horizon = horizon
+        self.name = name
 
         meta             = _load_metadata(self.data_dir)
         self.channel_ids = meta["channel_ids"]
@@ -465,8 +466,8 @@ class ShardedValDataset(_ShardedEvalDataset):
     a different model state because it trained on a different time partition.
     Losses are all-reduced across ranks for the global val metric.
     """
-    def __init__(self, data_dir: str, context_length: int, horizon: int):
-        super().__init__(data_dir, "val.parquet", context_length, horizon)
+    def __init__(self, data_dir: str, context_length: int, horizon: int, name=""):
+        super().__init__(data_dir, "val.parquet", context_length, horizon, name)
 
 class ShardedTestDataset(_ShardedEvalDataset):
     """
@@ -477,5 +478,5 @@ class ShardedTestDataset(_ShardedEvalDataset):
 
     Always used outside of any distributed context (eval_test() enforces this).
     """
-    def __init__(self, data_dir: str, context_length: int, horizon: int):
-        super().__init__(data_dir, "test.parquet", context_length, horizon)
+    def __init__(self, data_dir: str, context_length: int, horizon: int, name=""):
+        super().__init__(data_dir, "test.parquet", context_length, horizon, name)

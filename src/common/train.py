@@ -198,7 +198,8 @@ def _distributed_worker(
         seed         = seed + rank,      # different seed per rank
     )
     # Expose DDP wrapper so train_step gradients are all-reduced correctly
-    inner_model._ddp_model = ddp_model
+    #inner_model._ddp_model = ddp_model
+    object.__setattr__(inner_model, '_ddp_model', ddp_model)
     # Tell the model its rank/world_size so fit() can all-reduce train loss
     inner_model._rank       = rank
     inner_model._world_size = world_size

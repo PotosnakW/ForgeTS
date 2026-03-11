@@ -559,6 +559,7 @@ class DataLoaderFactory:
                     data_dir       = entry.sharded_dir,
                     context_length = _ctx(self.mcfg),
                     horizon        = entry.horizon,
+                    name           = entry.name,
                 )
             if split == "test":
                 from dataloaders.ts_sharding import ShardedTestDataset
@@ -566,6 +567,7 @@ class DataLoaderFactory:
                     data_dir       = entry.sharded_dir,
                     context_length = _ctx(self.mcfg),
                     horizon        = entry.horizon,
+                    name           = entry.name,
                 )
 
         df = _load_df(entry.path)
@@ -649,6 +651,7 @@ class DataLoaderFactory:
             flat_offset += len(ds)
 
         combined = ConcatDataset(all_datasets)
+        combined = all_datasets[0] if len(all_datasets) == 1 else ConcatDataset(all_datasets)
         sampler  = HorizonBatchSampler(
             group_datasets  = horizon_groups,
             group_weights   = {h: [1.0] * len(ds_list) for h, ds_list in horizon_groups.items()},

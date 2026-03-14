@@ -75,7 +75,7 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from dataloaders.ts_dataloader import SeriesMetadata, _pivot_to_arrays
+from tsfm_base.src.dataloaders._ts_dataloader import SeriesMetadata, _pivot_to_arrays
 
 
 def write_sharded_dataset(

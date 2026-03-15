@@ -69,7 +69,7 @@ class Encoder(nn.Module):
     ) -> torch.Tensor:
         """
         x_enc          : [B, C, seq_len]   seq_len = L (standard) or L+(T-1)*s (forking/auto)
-        available_mask : [B, seq_len]       1=real timestep, 0=padded/missing (optional)
+        available_mask : [B, C, seq_len]       1=real timestep, 0=padded/missing (optional)
 
         Patch attention mask
         ────────────────────
@@ -80,22 +80,23 @@ class Encoder(nn.Module):
         returns: [B, C, n_patch, d_model]
         """
         batch_size, n_channels, seq_len = x_enc.shape
+        print(f"{available_mask.shape=}")
 
         # dynamic n_patch from actual input (handles variable T for fcd_samples=-1)
         n_patch = (seq_len - self.patch_len) // self.stride + 1
 
         # build attention mask: [B, C, n_patch]
         if available_mask is not None:
-            # unfold matches tokenizer: [B, seq_len] → [B, n_patch, patch_len]
-            patch_avail    = available_mask.unfold(1, self.patch_len, self.stride)
-            patch_mask     = patch_avail.any(dim=-1).float()          # [B, n_patch]
-            key_padding_mask = patch_mask.unsqueeze(1).expand(-1, n_channels, -1)  # [B, C, n_patch]
+            patch_avail = available_mask.unfold(1, self.patch_len, self.stride)
+            key_padding_mask = patch_avail.any(dim=-1).float() # [B, C, n_patch]
         else:
             key_padding_mask = torch.ones(
-                batch_size, n_channels, n_patch, device=x_enc.device
+                batch_size, n_channels, n_patch
             )
-        attention_mask = _make_causal_token_mask(key_padding_mask=key_padding_mask, device=x_enc.device()) # [B, C, 1, n_patch, n_patch]
-        attention_mask = attention_mask.reshape(batch_size * n_channels, n_patch) # [B * C, 1, n_patch, n_patch]
+        print(f"{key_padding_mask.shape=}")
+        attention_mask = _make_causal_token_mask(key_padding_mask=key_padding_mask, device=x_enc.device) # [B, C, 1, n_patch, n_patch]
+        print(f"{attention_mask.shape=}")
+        attention_mask = attention_mask.reshape(batch_size * n_channels, 1, n_patch, n_patch) # [B * C, 1, n_patch, n_patch]
 
         x_enc  = self.tokenizer(x=x_enc)          # [B, C, n_patch, patch_len]
         x_enc  = self.W_P(x_enc)                  # [B, C, n_patch, d_model]
@@ -207,10 +208,11 @@ class MOMENT(BaseModel):
 
         # TODO @wpotosna extend MICA for covariates
 
-        x = batch["insample_y"] # [B, L+(T-1)*step_size, C, 1+Vh]
-        input_mask = batch["available_mask"]  # [B, L+(T-1)*step_size]
+        x = batch["insample_y"].clone() # [B, L+(T-1)*step_size, C, 1+Vh]
+        input_mask = batch["available_mask"].clone()  # [B, L+(T-1)*step_size, C]
         x = x[..., 0] # [B, L+(T-1)*step_size, C]  target only
         x_enc_in = x.permute(0, 2, 1) # [B, C, L+(T-1)*step_size]
+        input_mask = input_mask.permute(0, 2, 1) # [B, C, L+(T-1)*step_size]
 
         if self.revin:
             x_enc_in = x_enc_in.permute(0, 2, 1)  # [B, seq_len, C]
@@ -219,7 +221,7 @@ class MOMENT(BaseModel):
 
         enc_out  = self.encoder(
             x_enc          = x_enc_in,
-            available_mask = input_mask,           # [B, seq_len] from fork_sequences or caller
+            available_mask = input_mask,           # [B, C, seq_len]
         )                                          # [B, C, P_total, d_model]
         forecast = self.decoder(enc_out=enc_out) # both modes: [B, C, T, H*c_out]
 

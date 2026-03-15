@@ -1,51 +1,8 @@
-"""
-trainer.py
-──────────
-Training entry points.
-
-    train(...)               Single-process training (GPU or CPU).
-    train_distributed(...)   Multi-GPU DDP training via torchrun / mp.spawn.
-    eval_test(...)           Inference on test set — always single GPU.
-
-DISTRIBUTED STRATEGY
-─────────────────────
-Training:   All ranks process non-overlapping batch slices via HorizonBatchSampler.
-
-Validation: All ranks evaluate a DistributedSampler shard in parallel.
-            Loss sum and real sample count are all-reduced across ranks so
-            the final metric is exact (DistributedSampler padding is excluded).
-            No rank idles — validation scales with GPU count.
-
-Test:       Always single GPU, always after dist.destroy_process_group().
-            Distributed test requires reassembling predictions in order across
-            ranks — fiddly and error-prone for a one-shot evaluation. Caller
-            invokes eval_test() outside of any distributed context.
-
-USAGE
-─────
-Option A — torchrun (recommended):
-
-    torchrun --nproc_per_node=4 train_script.py
-
-    # train_script.py
-    factory = DataLoaderFactory(mcfg, dcfg)
-    train_distributed(model, mcfg, factory, backend="nccl")
-    # After this returns (rank 0 only continues):
-    results = eval_test(model, factory)
-
-Option B — mp.spawn (programmatic, single-machine):
-
-    train_distributed(model, mcfg, factory, use_spawn=True, world_size=4)
-    results = eval_test(model, factory)
-"""
-
-from __future__ import annotations
-
 import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict, Optional
+from typing import Dict, Optional, Callable
 
 import torch
 import torch.distributed as dist
@@ -75,6 +32,7 @@ def train(
     device:      torch.device | None = None,
     seed:        int = 42,
     resume:      str | None = None,
+    loss_fn:     Optional[Callable[[Tensor, Tensor], Tensor]] = None,
 ) -> Dict[str, Dict[str, float]]:
     """
     Single-process training loop.
@@ -107,6 +65,7 @@ def train(
         scheduler    = scheduler,
         device       = device,
         seed         = seed,
+        loss_fn      = loss_fn,
     )
     model._rank       = 0
     model._world_size = 1

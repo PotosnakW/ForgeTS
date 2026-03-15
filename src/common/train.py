@@ -53,7 +53,7 @@ import torch.multiprocessing as mp
 from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from tsfm_base.src.dataloaders._ts_dataloader import DataLoaderFactory
+from dataloaders._ts_dataloader import DataLoaderFactory
 
 logging.basicConfig(
     level=logging.INFO,

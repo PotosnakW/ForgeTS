@@ -4,10 +4,10 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-from ..common._base_model import BaseModel
-from ..common._modules import RevINMultivariate, Flatten_Head, Patching, PositionalEncoding, _mask_causal_token_mask
-from ..encoders.t5_encoder import T5Model
-from ..encoders.tst_encoder import TSTEncoder
+from common._base_model import BaseModel
+from common._modules import RevIN, Flatten_Head, Patching, PositionalEncoding, _make_causal_token_mask
+from encoders.t5_encoder import T5Model
+from encoders.tst_encoder import TSTEncoder
 from transformers import T5Config
 
 logger = logging.getLogger(__name__)
@@ -192,7 +192,7 @@ class MOMENT(BaseModel):
 
         self.revin = config.revin
         if config.revin:
-            self.revin_layer = RevINMultivariate(
+            self.revin_layer = RevIN(
                 affine = config.revin_affine,
                 subtract_last = config.revin_subtract_last,
             )

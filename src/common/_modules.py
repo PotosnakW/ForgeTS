@@ -1,11 +1,7 @@
 import warnings
-
 import torch
 from torch import nn
-
-from moment.utils.data import nanstd
-
-warnings.filterwarnings(action='ignore', category=UserWarning)
+import math
 
 
 class MLP(nn.Module):

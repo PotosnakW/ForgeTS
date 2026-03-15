@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from .utils import EarlyStopper
 from dataloaders._forking_sequences import fork_sequences
-from losses.torch_losses import *
+from losses.torch_losses import get_loss
 
 logger = logging.getLogger(__name__)
 
@@ -148,12 +148,7 @@ class BaseModel(nn.Module):
             self.parameters(), lr=mcfg.learning_rate, weight_decay=1e-2
         )
 
-        _LOSS_FNS = {
-        "mse": mse_loss,
-        "mae": mae_loss,
-        "quantile": partial(quantile_loss, quantiles=getattr(mcfg, "quantiles", [])),
-        }
-        self.loss_fn = _LOSS_FNS[getattr(mcfg, "loss", "mse")]
+        self.loss_fn = loss_fn or get_loss(mcfg.loss)
 
         self.early_stopper = EarlyStopper(
             patience = mcfg.early_stopping_patience,

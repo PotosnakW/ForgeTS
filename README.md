@@ -12,16 +12,17 @@
 
 | | Section |
 |---|---|
-| 1 | [Core Concepts](#core-concepts) |
-| 2 | [Quick Start](#quick-start) |
-| 3 | [Dataloaders](#dataloaders) |
-| 4 | [Forking Sequences](#forking-sequences) |
-| 5 | [Training](#training) |
-| 6 | [Validation Strategies](#validation-strategies) |
-| 7 | [Distributed Training](#distributed-training) |
-| 8 | [Data Sharding](#data-sharding) |
-| 9 | [Inference & Predictions](#inference--predictions) |
-| 10 | [License](#license) |
+| 1  | [Core Concepts](#core-concepts)                   |
+| 2  | [Quick Start](#quick-start)                       |
+| 3  | [Dataloaders](#dataloaders)                       |
+| 4  | [Forking Sequences](#forking-sequences)           |
+| 5  | [Training](#training)                             |
+| 6  | [Loss Functions](#loss-functions)                 |
+| 7  | [Validation Strategies](#validation-strategies)   |
+| 8  | [Distributed Training](#distributed-training)     |
+| 9  | [Data Sharding](#data-sharding)                   |
+| 10 | [Inference & Predictions](#inference--predictions)|
+| 11 | [License](#license)                               |
 
 <br>
 
@@ -339,6 +340,193 @@ model.fit()
 ---
 
 <br>
+
+## Loss Functions
+
+> Adapted from [datasetsforecast](https://github.com/Nixtla/datasetsforecast/blob/main/datasetsforecast/losses.py)
+
+All losses share a common masked-reduction contract — padded channels and
+missing timesteps are excluded from both the numerator and denominator.
+`outsample_mask` from `fork_sequences` flows directly into every loss call
+without any additional preprocessing.
+
+<br>
+
+---
+
+<br>
+
+### Training Losses (PyTorch)
+
+Select the loss via `mcfg.loss`:
+
+| `mcfg.loss` | Function | Extra config |
+|---|---|---|
+| `"mae"` | `mae_loss` | — |
+| `"mse"` | `mse_loss` | — |
+| `"huber"` | `huber_loss` | `delta: 1.0` |
+| `"quantile"` | `quantile_loss` | `quantiles: [0.1, 0.5, 0.9]` |
+
+All point-forecast losses share the same signature:
+```python
+loss_fn(
+    preds:   torch.Tensor,         # [B, H, C]
+    targets: torch.Tensor,         # [B, H, C]
+    mask:    torch.Tensor | None,  # [B, H, C]  1=real, 0=padded/missing
+) -> torch.Tensor                  # scalar
+```
+
+Masked reduction applied by every loss:
+```python
+(raw_loss * mask).sum() / mask.sum().clamp(min=1)
+```
+
+When `mask is None` a plain `.mean()` is used — equivalent to a mask of all ones.
+
+<br>
+
+#### MAE
+
+Mean absolute error. Constant-magnitude gradients make it robust to large
+outliers but the non-differentiability at zero can slow convergence near
+the optimum.
+```
+L = mean( |y − ŷ| )
+```
+```yaml
+loss: "mae"
+```
+
+<br>
+
+#### MSE
+
+Mean squared error. Quadratic penalty makes large errors dominate the
+gradient signal — useful when big misses should be prioritised, but
+sensitive to outliers.
+```
+L = mean( (y − ŷ)² )
+```
+```yaml
+loss: "mse"
+```
+
+<br>
+
+#### Huber
+
+Quadratic (MSE-like) when the absolute error is below `delta`, linear
+(MAE-like) above it. Smooth at zero, robust in the tails.
+```
+         ½ (y − ŷ)²                   if |y − ŷ| < δ
+L_δ  =
+         δ · (|y − ŷ| − ½δ)           otherwise
+```
+
+`delta` controls the crossover point — set it to the typical scale of your
+residuals. Smaller values increase robustness; larger values approach MSE.
+```yaml
+loss: "huber"
+delta: 1.0      # default
+```
+
+<br>
+
+#### Quantile (Pinball)
+
+Trains the model to predict Q quantile levels simultaneously. The model
+output expands to `[B, H, C × Q]`; the loss function handles the reshape
+internally.
+```
+L_q = mean over q of  max( q·(y − ŷ_q),  (q−1)·(y − ŷ_q) )
+```
+
+The median quantile `q = 0.5` is equivalent to MAE up to a constant factor.
+Interval width is calibrated by the gap between symmetric quantile pairs
+(e.g. `0.1` / `0.9`).
+```yaml
+loss: "quantile"
+quantiles: [0.1, 0.5, 0.9]
+```
+```python
+# Quantile loss signature differs — preds carries C × Q channels
+quantile_loss(
+    preds:     torch.Tensor,   # [B, H, C × Q]
+    targets:   torch.Tensor,   # [B, H, C]
+    quantiles: list[float],
+    mask:      torch.Tensor | None,  # [B, H, C]
+) -> torch.Tensor
+```
+
+<br>
+
+---
+
+<br>
+
+### Evaluation Losses (NumPy)
+
+Used in `eval_test` and any offline metric computation. Inputs are plain
+NumPy arrays; the mask is an optional boolean or `{0,1}` integer array with
+the same shape as `preds`.
+```python
+from common.losses_np import mae, mse, rmse, mape, smape
+```
+
+| Function | Formula |
+|---|---|
+| `mae` | `mean( \|y − ŷ\| )` |
+| `mse` | `mean( (y − ŷ)² )` |
+| `rmse` | `sqrt( mse )` |
+| `mape` | `mean( \|y − ŷ\| / \|y\| ) × 100` |
+| `smape` | `mean( 2\|y − ŷ\| / (\|y\| + \|ŷ\|) ) × 100` |
+
+All functions share the same array contract:
+```python
+metric_fn(
+    preds:   np.ndarray,            # [..., H, C]
+    targets: np.ndarray,            # [..., H, C]
+    mask:    np.ndarray | None,     # [..., H, C]  1=real, 0=missing
+) -> float
+```
+
+<br>
+
+**Typical usage with `eval_test` results:**
+```python
+from common.losses_np import mae, rmse
+
+results = eval_test(model, factory, device=torch.device("cuda"))
+
+preds   = results["simglucose"]["preds"].numpy()           # [n_fcds, H, C]
+targets = results["simglucose"]["targets"].numpy()         # [n_fcds, H, C]
+mask    = results["simglucose"]["outsample_mask"].numpy()  # [n_fcds, H, C]
+
+print("MAE: ", mae(preds, targets, mask))
+print("RMSE:", rmse(preds, targets, mask))
+```
+
+Example use cases:
+```python
+preds   = results["simglucose"]["preds"].numpy()           # [n_fcds, H, C]
+targets = results["simglucose"]["targets"].numpy()         # [n_fcds, H, C]
+mask    = results["simglucose"]["outsample_mask"].numpy()  # [n_fcds, H, C]
+print("MAE: ", mae(preds, targets, mask))
+print("RMSE:", rmse(preds, targets, mask))
+```
+
+> **Quantile models** — pass only the median slice to point-forecast metrics:
+> ```python
+> Q   = len(mcfg.quantiles)
+> mid = mcfg.quantiles.index(0.5)          # index of q=0.5
+> # preds shape is [n_fcds, H, C, Q] after reshaping
+> p_median = preds.reshape(*preds.shape[:-1], -1, Q)[..., mid]
+> print("Median MAE:", mae(p_median, targets, mask))
+> ```
+
+<br>
+
+---
 
 ## Validation Strategies
 

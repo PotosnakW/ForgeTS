@@ -1,70 +1,3 @@
-"""
-ts_sharding.py
-──────────────
-Sharded parquet storage for multivariate time series too large for RAM,
-with built-in support for distributed training.
-
-SPLIT BOUNDARIES
-─────────────────
-Derived from val_size / test_size in your data config yaml:
-
-    train_end = T - val_size - test_size
-    val_end   = T - test_size
-
-    train shards → [0,            train_end)        all channels, L-row overlap
-    val.parquet  → [train_end-L,  val_end)          context head from train
-    test.parquet → [val_end-L,    T)                context head from val
-
-DISTRIBUTED TRAINING
-─────────────────────
-Train:  files[rank::world_size] — each rank loads its assigned shards at
-        startup and samples FCD windows from them via heterogeneous_sampler.
-
-Val:    Every rank loads complete val.parquet. fcd_samples=-1 produces all
-        valid FCD windows. Losses are all-reduced across ranks for global metric.
-
-Test:   Single GPU, loads test.parquet via ShardedTestDataset.
-        Called outside of any distributed context.
-
-DISK LAYOUT
-───────────
-out_dir/
-    shard_000000.parquet   # t=[0,         shard_size+L), all channels
-    shard_000001.parquet   # t=[shard_size, 2*shard_size+L), all channels
-    ...
-    val.parquet            # t=[train_end-L, val_end),  all channels
-    test.parquet           # t=[val_end-L,   T_total),  all channels
-    static.parquet         # per-channel static features (if any)
-    metadata.json          # split boundaries, shard index, schema
-
-USAGE
-─────
-    from ts_sharding import write_sharded_dataset, ShardedTrainDataset
-    from ts_sharding import ShardedValDataset, ShardedTestDataset
-
-    # One-time write — matches dcfg entry fields directly
-    write_sharded_dataset(
-        df             = full_df,
-        out_dir        = "data/sharded/simglucose",
-        val_size       = 2592,
-        test_size      = 2592,
-        context_length = 512,
-        shard_size     = 5_000,
-        hist_exog_cols = ["CHO", "insulin"],
-    )
-
-    # Training (rank-aware)
-    ds_train = ShardedTrainDataset("data/sharded/simglucose",
-                                   context_length=512, horizon=6,
-                                   rank=0, world_size=4)
-    # Validation (full set, every rank)
-    ds_val  = ShardedValDataset("data/sharded/simglucose",
-                                context_length=512, horizon=6)
-    # Test (single GPU)
-    ds_test = ShardedTestDataset("data/sharded/simglucose",
-                                 context_length=512, horizon=6)
-"""
-
 import json
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -75,7 +8,7 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from tsfm_base.src.dataloaders._ts_dataloader import SeriesMetadata, _pivot_to_arrays
+from dataloaders._ts_dataloader import SeriesMetadata, _pivot_to_arrays
 
 
 def write_sharded_dataset(

@@ -1,8 +1,9 @@
 import torch 
 import torch.nn as nn
+from typing import Optional
 
-from ..common._infini import MultiheadAttention
-from ..common._modules import Transpose
+from encoders._mica_attention import MultiheadAttention
+from common._modules import Transpose
 
 
 class TSTEncoder(nn.Module):

@@ -20,7 +20,7 @@ from transformers.modeling_outputs import (
     TokenClassifierOutput,
 )
 
-from ._modules import MLP
+from common._modules import MLP
 
 
 class T5Attention(nn.Module): # Default T5Attention copied from HuggingFace for version control

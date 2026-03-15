@@ -207,7 +207,6 @@ class BaseModel(nn.Module):
         batch = self._prepare_batch(raw_batch)
 
         self.optimizer.zero_grad(set_to_none=True)
-        #pred = self(batch)
         fwd  = self.__dict__.get('_ddp_model', self)
         pred = fwd(batch)
         loss = self.compute_loss(pred, batch)

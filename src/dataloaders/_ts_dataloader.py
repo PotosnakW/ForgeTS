@@ -1,21 +1,3 @@
-"""
-ts_dataloader.py
-────────────────
-Multivariate time series data loading pipeline.
-
-Key design decisions
-────────────────────
-- available_mask shape is [B, C, T] — per-channel, per-timestep availability.
-- Left-padding: real data is right-aligned so position T-1 always means "now"
-  regardless of series length. Channel and feature dims are right-padded.
-- SeriesMetadata holds per-series static features separately from temporal data.
-- available_mask must be present in input data — raises if missing.
-- HorizonBatchSampler uses contiguous rank slices for DDP (no duplicate batches).
-- ShardedTimeSeriesDataset lives in ts_sharding.py.
-"""
-
-from __future__ import annotations
-
 import warnings
 from collections import defaultdict
 from pathlib import Path
@@ -225,10 +207,9 @@ class FullSeriesDataset(Dataset):
         self.y              = torch.from_numpy(y)                          # [T, C]
         self.hist           = torch.from_numpy(hist)                       # [T, C, Vh]
         self.futr           = torch.from_numpy(futr)                       # [T, C, Vf]
-        # Store as [C, T] so collation pads time on the left naturally
         self.available_mask = torch.from_numpy(
             available_mask.astype(np.float32)
-        ).T.contiguous()    
+        ).contiguous()                            # [T, C]
         self.channel_ids = channel_ids or [str(i) for i in range(C)]
         self.metadata       = metadata
         self.ctx            = context_length
@@ -324,8 +305,8 @@ def _full_series_collate_fn(batch):
         out_x_enc.append(x)
 
         # available_mask: [C_i, T_i] -> right-pad channels, left-pad time
-        m = F.pad(s["available_mask"], (0, 0, 0, C_max - C_i))       # [C_max, T_i]
-        m = F.pad(m, (T_max - T_i, 0))                                # [C_max, T_max]
+        m = F.pad(s["available_mask"], (0, C_max - C_i))          # [T_i, C_max]
+        m = _pad_left(m, T_max)                                   # [T_max, C_max]
         out_mask.append(m)
 
         channel_mask[i, :C_i] = 1.0

@@ -4,36 +4,34 @@ from torch import Tensor
 
 
 def _gather_block(
-    src:          Tensor,   # [B, T_s, C, *extra]
+    src:          Tensor,   # [B, S, C, *extra]
     window_start: Tensor,   # [B]
     block_len:    int,
-    T_s:          int,
+    S:            int,
 ) -> Tensor:
     """Gather a contiguous block of `block_len` steps forward from window_start."""
     B     = src.shape[0]
     extra = src.shape[2:]
     offsets = torch.arange(block_len, device=src.device)
-    grid    = (window_start.unsqueeze(1) + offsets.unsqueeze(0)).clamp(0, T_s - 1)
+    grid    = (window_start.unsqueeze(1) + offsets.unsqueeze(0)).clamp(0, S - 1)
     return src.gather(
         1,
         grid.unsqueeze(-1).unsqueeze(-1).expand(B, block_len, *extra)
     )
 
 def _gather_mask(
-    mask:         Tensor,   # [B, C, T_s]
+    mask:         Tensor,   # [B, S, C]
     window_start: Tensor,   # [B]
     block_len:    int,
-    T_s:          int,
+    S:            int,
 ) -> Tensor:
-    """Gather available_mask over the same forward block. Returns [B, C, block_len]."""
-    B, C, _ = mask.shape
+    B, _, C = mask.shape
     grid = (
         window_start.unsqueeze(1)
         + torch.arange(block_len, device=mask.device).unsqueeze(0)
-    ).clamp(0, T_s - 1)                                    # [B, block_len]
-    # expand grid to cover all channels
-    grid = grid.unsqueeze(1).expand(B, C, block_len)       # [B, C, block_len]
-    return mask.gather(2, grid)                            # [B, C, block_len]
+    ).clamp(0, S - 1)                                     # [B, block_len]
+    grid = grid.unsqueeze(-1).expand(B, block_len, C)     # [B, block_len, C]
+    return mask.gather(1, grid)                           # [B, block_len, C]
 
 def _unfold_windows(src: Tensor, size: int, step: int) -> Tensor:
     """
@@ -79,7 +77,7 @@ def n_valid_fcds(T: int, context_length: int, horizon: int, step_size: int) -> i
 
 
 def heterogeneous_sampler(
-    available_mask: Tensor,   # [B, C, T_s]
+    available_mask: Tensor,   # [B, S, C]
     context_length: int,
     fcd_samples:    int,
     horizon:        int,
@@ -97,10 +95,10 @@ def heterogeneous_sampler(
     data there. This naturally skips both left-padding AND mid-series gaps.
 
     Upper bound (scalar, same for all series):
-        window_start + block_len - 1 <= T_s - H - 1
+        window_start + block_len - 1 <= S - H - 1
         The last FCD's horizon must not extend into the last H timesteps,
         where targets don't exist in the training data.
-        Rearranges to: window_start <= T_s - block_len - H  (= max_start)
+        Rearranges to: window_start <= S - block_len - H  (= max_start)
 
     Sampling is via torch.multinomial, so each series gets an independent
     start index drawn proportionally to its own availability weights.
@@ -113,14 +111,14 @@ def heterogeneous_sampler(
     window_start : [B]   per-series start index sampled from [first_real[b], max_start]
     block_len    : int   total length of the block from window_start
     """
-    B, C, T_s = available_mask.shape
+    B, S, C = available_mask.shape
 
     block_len = context_length + (fcd_samples - 1) * step_size + horizon
-    max_start = T_s - block_len - horizon   # scalar upper bound, inclusive
+    max_start = S - block_len - horizon   # scalar upper bound, inclusive
 
-    # Collapse [B, C, T_s] -> [B, T_s] via min:
+    # Collapse [B, S, C] -> [B, S] via min:
     # a timestep is only a valid start if ALL channels have real data there.
-    time_mask = available_mask.min(dim=1).values                          # [B, T_s]
+    time_mask = available_mask.min(dim=2).values                          # [B, S]
 
     # Zero out positions where the block would overflow into the last H steps.
     # Positions 0..max_start are geometrically valid; beyond that targets don't exist.
@@ -153,32 +151,32 @@ def fork_sequences(
 
     fcd_samples != -1  (training)
         heterogeneous_sampler picks window_start such that the block ends
-        at or before T_s - H (the reserved evaluation tail).
+        at or before S - H (the reserved evaluation tail).
         _unfold_windows produces exactly fcd_samples complete windows.
 
     fcd_samples == -1  (val / test)
         The full left-padded series is consumed.
-        _unfold_windows produces floor((T_s - L - H) / step) + 1 windows.
+        _unfold_windows produces floor((S - L - H) / step) + 1 windows.
         Any incomplete trailing window is dropped — no overflow.
 
     Inputs  (left-padded, from collate)
     ------------------------------------
-    x_enc          : [B, T_s, C, 1+Vh]
-    available_mask : [B, C, T_s]         0=pad/missing, 1=real
+    x_enc          : [B, S, C, 1+Vh]
+    available_mask : [B, S, C]         0=pad/missing, 1=real
 
     Outputs
     -------
     insample_y     : [B, enc_size, C, 1+Vh]    enc_size = block_len - H
     outsample_y    : [B, n_fcds,   H,  C]
-    available_mask : [B, C, enc_size]
+    available_mask : [B, enc_size, C]
     """
     x_enc_full     = batch["x_enc"]
     available_mask = batch["available_mask"]
     hist_mask      = batch.get("hist_mask")
 
-    B, T_s, C, _ = x_enc_full.shape
-    assert available_mask.shape == (B, C, T_s), (
-        f"available_mask must be [B, C, T_s] = [{B}, {C}, {T_s}], "
+    B, S, C, _ = x_enc_full.shape
+    assert available_mask.shape == (B, S, C), (
+        f"available_mask must be [B, S, C] = [{B}, {S}, {C}], "
         f"got {tuple(available_mask.shape)}"
     )
     L, H = context_length, horizon
@@ -191,8 +189,8 @@ def fork_sequences(
             horizon        = H,
             step_size      = step_size,
         )
-        enc_block  = _gather_block(x_enc_full,    window_start, block_len, T_s)
-        mask_block = _gather_mask(available_mask, window_start, block_len, T_s)
+        enc_block  = _gather_block(x_enc_full,    window_start, block_len, S)
+        mask_block = _gather_mask(available_mask, window_start, block_len, S)
     else:
         # Full series: let _unfold_windows drop incomplete trailing windows.
         enc_block  = x_enc_full
@@ -200,16 +198,16 @@ def fork_sequences(
 
     # [B, block_len, C, 1+Vh] -> [B, n_fcds, L+H, C, 1+Vh]
     # torch.unfold drops any trailing incomplete window automatically.
-    enc_windows = _unfold_windows(enc_block, size=L + H, step=step_size)
-    mask_windows   = _unfold_windows(mask_block.permute(0, 2, 1), size=L + H, step=step_size)
-    outsample_mask = mask_windows[:, :, L:, :]          # [B, n_fcds, H, C]
-    enc_size    = enc_block.shape[1] - H   # insample length (block_len - H)
+    enc_windows  = _unfold_windows(enc_block,  size=L + H, step=step_size)
+    mask_windows = _unfold_windows(mask_block, size=L + H, step=step_size)
+    outsample_mask = mask_windows[:, :, L:, :]               # [B, n_fcds, H, C]
+    enc_size = enc_block.shape[1] - H                        # block_len - H
 
     out = dict(
-        insample_y     = enc_block[:, :enc_size],       # [B, enc_size, C, 1+Vh]
-        outsample_y    = enc_windows[:, :, L:, :, 0],  # [B, n_fcds,   H,  C]
-        outsample_mask = outsample_mask,  
-        available_mask = mask_block[:, :, :enc_size],   # [B, C, enc_size]
+        insample_y     = enc_block[:, :enc_size],             # [B, enc_size, C, 1+Vh]
+        outsample_y    = enc_windows[:, :, L:, :, 0],        # [B, n_fcds,   H,  C]
+        outsample_mask = outsample_mask,                      # [B, n_fcds,   H,  C]
+        available_mask = mask_block[:, :enc_size],            # [B, enc_size, C]
     )
     if hist_mask is not None:
         out["hist_mask"] = hist_mask

@@ -80,22 +80,20 @@ class Encoder(nn.Module):
         returns: [B, C, n_patch, d_model]
         """
         batch_size, n_channels, seq_len = x_enc.shape
-        print(f"{available_mask.shape=}")
 
         # dynamic n_patch from actual input (handles variable T for fcd_samples=-1)
         n_patch = (seq_len - self.patch_len) // self.stride + 1
 
         # build attention mask: [B, C, n_patch]
         if available_mask is not None:
-            patch_avail = available_mask.unfold(1, self.patch_len, self.stride)
+            patch_avail = available_mask.unfold(-1, self.patch_len, self.stride)
             key_padding_mask = patch_avail.any(dim=-1).float() # [B, C, n_patch]
         else:
             key_padding_mask = torch.ones(
                 batch_size, n_channels, n_patch
             )
-        print(f"{key_padding_mask.shape=}")
+
         attention_mask = _make_causal_token_mask(key_padding_mask=key_padding_mask, device=x_enc.device) # [B, C, 1, n_patch, n_patch]
-        print(f"{attention_mask.shape=}")
         attention_mask = attention_mask.reshape(batch_size * n_channels, 1, n_patch, n_patch) # [B * C, 1, n_patch, n_patch]
 
         x_enc  = self.tokenizer(x=x_enc)          # [B, C, n_patch, patch_len]
@@ -112,6 +110,7 @@ class Encoder(nn.Module):
             attention_mask = attention_mask,
         )
         enc_out = outputs.last_hidden_state  # [B*C, n_patch, d_model]
+        print(f"{enc_out.shape=}")
 
         return enc_out.reshape(
             batch_size, n_channels, n_patch, self.hidden_size
@@ -143,8 +142,7 @@ class Decoder(nn.Module):
         returns : [B, C, 1, H*c_out]   T=1 so forward is identical for both modes
         """
         B, C = enc_out.shape[:2]
-        flat = enc_out.reshape(B, C, -1)           # [B, C, P*d_model]
-        pred = self.forecast_head(flat)            # [B, C, H*c_out]
+        pred = self.forecast_head(enc_out)            # [B, C, H*c_out]
         return pred.unsqueeze(2)                   # [B, C, 1, H*c_out]  T=1 unifies both modes
 
     def _decode_forking(self, enc_out: torch.Tensor) -> torch.Tensor:
@@ -159,14 +157,14 @@ class Decoder(nn.Module):
         """
         B, C, _, d = enc_out.shape
 
-        windows = (
+        enc_out_windows = (
             enc_out
             .unfold(dimension=2, size=self.patch_num_inp, step=1)   # [B, C, T, d, P]
             .permute(0, 1, 2, 4, 3) # [B, C, T, P, d]
             .contiguous()
         )
-        flat = windows.reshape(B, C, -1, self.patch_num_inp * d)     # [B, C, T, P*d_model]
-        return self.forecast_head(flat)             # [B, C, T, H*c_out]
+        print(f"{enc_out_windows.shape=}")
+        return self.forecast_head(enc_out_windows)             # [B, C, T, H*c_out]
 
     def forward(self, enc_out: torch.Tensor) -> torch.Tensor:
         return self.decode(enc_out)
@@ -224,6 +222,7 @@ class MOMENT(BaseModel):
             available_mask = input_mask,           # [B, C, seq_len]
         )                                          # [B, C, P_total, d_model]
         forecast = self.decoder(enc_out=enc_out) # both modes: [B, C, T, H*c_out]
+        print(f"{forecast.shape=}")
 
         # RevIN denorm:
         if self.revin:
@@ -237,6 +236,6 @@ class MOMENT(BaseModel):
         B, C, T, _ = forecast.shape
         forecast = forecast.reshape(B, C, T, self.h, -1)   # [B, C, T, H, c_out]
         forecast = forecast.permute(0, 2, 3, 4, 1)         # [B, T, H, c_out, C]
-        forecast = forecast.reshape(B * T, self.h, -1)     # [B*T, H, c_out*C]
+        forecast = forecast.reshape(B, T, self.h, -1)     # [B, T, H, c_out*C]
 
-        return forecast  # [B*T, H, c_out*C]
+        return forecast  # [B, T, H, c_out*C]

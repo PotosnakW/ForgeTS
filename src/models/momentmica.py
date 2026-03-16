@@ -110,7 +110,6 @@ class Encoder(nn.Module):
             attention_mask = attention_mask,
         )
         enc_out = outputs.last_hidden_state  # [B*C, n_patch, d_model]
-        print(f"{enc_out.shape=}")
 
         return enc_out.reshape(
             batch_size, n_channels, n_patch, self.hidden_size
@@ -163,7 +162,6 @@ class Decoder(nn.Module):
             .permute(0, 1, 2, 4, 3) # [B, C, T, P, d]
             .contiguous()
         )
-        print(f"{enc_out_windows.shape=}")
         return self.forecast_head(enc_out_windows)             # [B, C, T, H*c_out]
 
     def forward(self, enc_out: torch.Tensor) -> torch.Tensor:
@@ -222,7 +220,6 @@ class MOMENT(BaseModel):
             available_mask = input_mask,           # [B, C, seq_len]
         )                                          # [B, C, P_total, d_model]
         forecast = self.decoder(enc_out=enc_out) # both modes: [B, C, T, H*c_out]
-        print(f"{forecast.shape=}")
 
         # RevIN denorm:
         if self.revin:

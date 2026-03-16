@@ -336,7 +336,9 @@ class MultiheadAttention(nn.Module):
     def forward(
         self,
         n_channels: int,
-        inputs_embeds: torch.Tensor,
+        Q: torch.Tensor,
+        K: Optional[torch.Tensor] = None,
+        V: Optional[torch.Tensor] = None,
         prev: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
     ):
@@ -358,12 +360,16 @@ class MultiheadAttention(nn.Module):
             attn_weights: [bs*n_channels x 1 x seq_len x seq_len]
         """
 
-        batch_size, _, _ = inputs_embeds.shape
+        batch_size = Q.size(0)
+        if K is None:
+            K = Q
+        if V is None:
+            V = Q
         
         # Linear projections and split into multiple heads
-        q_s = self.W_Q(inputs_embeds).view(batch_size, -1, self.n_heads, self.d_k)  # [bs x seq_len x n_heads x d_k]
-        k_s = self.W_K(inputs_embeds).view(batch_size, -1, self.n_heads, self.d_k)  # [bs x seq_len x n_heads x d_k]
-        v_s = self.W_V(inputs_embeds).view(batch_size, -1, self.n_heads, self.d_v)  # [bs x seq_len x n_heads x d_v]
+        q_s = self.W_Q(Q).view(batch_size, -1, self.n_heads, self.d_k)  # [bs x seq_len x n_heads x d_k]
+        k_s = self.W_K(K).view(batch_size, -1, self.n_heads, self.d_k)  # [bs x seq_len x n_heads x d_k]
+        v_s = self.W_V(V).view(batch_size, -1, self.n_heads, self.d_v)  # [bs x seq_len x n_heads x d_v]
 
         # Apply Scaled Dot-Product Attention (multiple heads)
         if self.res_attention:

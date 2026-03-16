@@ -5,6 +5,16 @@ from typing import Optional
 from encoders._mica_attention import MultiheadAttention
 from common._modules import Transpose
 
+def get_activation_fn(activation):
+    if callable(activation):
+        return activation()
+    elif activation.lower() == "relu":
+        return nn.ReLU()
+    elif activation.lower() == "gelu":
+        return nn.GELU()
+    raise ValueError(
+        f'{activation} is not available. You can use "relu", "gelu", or a callable'
+    )
 
 class TSTEncoder(nn.Module):
     """
@@ -40,32 +50,31 @@ class TSTEncoder(nn.Module):
 
     def forward(
         self,
-        src: torch.Tensor,
+        inputs_embeds: torch.Tensor,
         n_channels: int,
-        key_padding_mask: Optional[torch.Tensor] = None,
-        attn_mask: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ):
-        output = src
+        output = inputs_embeds
         scores = None
         if self.res_attention:
             for mod in self.layers:
                 output, scores = mod(
-                    src=output,
+                    inputs_embeds=output,
                     n_channels=n_channels,
                     prev=scores,
-                    key_padding_mask=key_padding_mask,
-                    attn_mask=attn_mask,
+                    attention_mask=attention_mask,
                 )
-            return output
+            self.last_hidden_state = output
+            return self #output
         else:
             for mod in self.layers:
                 output = mod(
-                    src=output, 
+                    inputs_embeds=output, 
                     n_channels=n_channels,
-                    key_padding_mask=key_padding_mask, 
-                    attn_mask=attn_mask
+                    attention_mask=attention_mask
                 )
-            return output
+            self.last_hidden_state = output
+            return self
 
 class TSTEncoderLayer(nn.Module):
     """
@@ -116,59 +125,56 @@ class TSTEncoderLayer(nn.Module):
 
     def forward(
         self,
-        src: torch.Tensor,
+        inputs_embeds: torch.Tensor,
         n_channels: int,
         prev: Optional[torch.Tensor] = None,
-        key_padding_mask: Optional[torch.Tensor] = None,
-        attn_mask: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ):  # -> Tuple[torch.Tensor, Any]:
 
         # Multi-Head attention sublayer
         if self.pre_norm:
-            src = self.norm_attn(src)
+            inputs_embeds = self.norm_attn(inputs_embeds)
         ## Multi-Head attention
         if self.res_attention:
-            src2, attn, scores = self.self_attn(
+            inputs_embeds2, attn, scores = self.self_attn(
                 n_channels=n_channels,
-                Q=src,
-                K=src,
-                V=src,
+                Q=inputs_embeds,
+                K=inputs_embeds,
+                V=inputs_embeds,
                 prev=prev,
-                key_padding_mask=key_padding_mask,
-                attn_mask=attn_mask,
+                attention_mask=attention_mask,
             )
         else:
-            src2, attn = self.self_attn(
+            inputs_embeds2, attn = self.self_attn(
                 n_channels=n_channels,
-                Q=src,
-                K=src,
-                V=src,
-                key_padding_mask=key_padding_mask,
-                attn_mask=attn_mask,
+                Q=inputs_embeds,
+                K=inputs_embeds,
+                V=inputs_embeds,
+                attention_mask=attention_mask,
             )
         if self.store_attn:
             self.attn = attn
         ## Add & Norm
-        src = src + self.dropout_attn(
-            src2
+        inputs_embeds = inputs_embeds + self.dropout_attn(
+            inputs_embeds2
         )  # Add: residual connection with residual dropout
         if not self.pre_norm:
-            src = self.norm_attn(src)
+            inputs_embeds = self.norm_attn(inputs_embeds)
 
         # Feed-forward sublayer
         if self.pre_norm:
-            src = self.norm_ffn(src)
+            inputs_embeds = self.norm_ffn(inputs_embeds)
         ## Position-wise Feed-Forward
-        src2 = self.ff(src)
+        inputs_embeds2 = self.ff(inputs_embeds)
         ## Add & Norm
-        src = src + self.dropout_ffn(
-            src2
+        inputs_embeds = inputs_embeds + self.dropout_ffn(
+            inputs_embeds2
         )  # Add: residual connection with residual dropout
         if not self.pre_norm:
-            src = self.norm_ffn(src)
+            inputs_embeds = self.norm_ffn(inputs_embeds)
 
         if self.res_attention:
-            return src, scores
+            return inputs_embeds, scores
         else:
-            return src
+            return inputs_embeds
     

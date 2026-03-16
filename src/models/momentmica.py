@@ -120,7 +120,7 @@ class Decoder(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        patch_num_inp = int((config.input_size - config.patch_len) / config.stride + 1)
+        patch_num_inp = int((config.context_length - config.patch_len) / config.stride + 1)
         self.patch_num_inp = patch_num_inp
 
         self.forecast_head = Flatten_Head(
@@ -178,12 +178,12 @@ class MOMENT(BaseModel):
         if isinstance(config, dict):
             config = SimpleNamespace(**config)
 
-        assert (config.input_size - config.patch_len) % config.stride == 0, (
-            f"(input_size - patch_len) % stride must be 0, got "
-            f"({config.input_size} - {config.patch_len}) % {config.stride} = "
-            f"{(config.input_size - config.patch_len) % config.stride}"
+        assert (config.context_length - config.patch_len) % config.stride == 0, (
+            f"(context_length - patch_len) % stride must be 0, got "
+            f"({config.context_length} - {config.patch_len}) % {config.stride} = "
+            f"{(config.context_lengthe - config.patch_len) % config.stride}"
         )
-        config.patch_len = min(config.input_size, config.patch_len)
+        config.patch_len = min(config.context_length, config.patch_len)
         config.c_out = config.loss.outputsize_multiplier
 
         self.fcd_samples = config.fcd_samples

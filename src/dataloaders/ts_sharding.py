@@ -75,7 +75,7 @@ def write_sharded_dataset(
     # ── Train shards ──────────────────────────────────────────────────────────
     # Each shard covers [t0, min(t0 + shard_size + L, train_end)).
     # The L-row right-edge overlap means a window starting at the last row
-    # of shard N's sample range has a full context window within shard N — 
+    # of shard N's sample range has a full context window within shard N —
     # no cross-file reads needed.
     shard_meta = []
     for shard_idx, t0 in enumerate(range(0, train_end, shard_size)):
@@ -233,12 +233,11 @@ def _parquet_to_tensors(
         if futr_cols else np.zeros((T, C, 0), dtype=np.float32)
     )
 
-    # available_mask: [T, C] → transpose to [C, T] to match FullSeriesDataset
     mask = np.stack(
         [df[f"mask__{cid}"].values for cid in channel_ids], axis=-1
     ).astype(np.float32)                                           # [T, C]
 
-    y_enc = torch.from_numpy(y).unsqueeze(-1)                     # [T, C, 1]
+    y_enc  = torch.from_numpy(y).unsqueeze(-1)                    # [T, C, 1]
     hist_t = torch.from_numpy(hist)
     x_enc  = (
         torch.cat([y_enc, hist_t], dim=-1)
@@ -248,7 +247,7 @@ def _parquet_to_tensors(
     return dict(
         x_enc          = x_enc,                                    # [T, C, 1+Vh]
         x_futr         = torch.from_numpy(futr),                   # [T, C, Vf]
-        available_mask = torch.from_numpy(mask).T.contiguous(),    # [C, T]
+        available_mask = torch.from_numpy(mask).contiguous(),      # [T, C]
     )
 
 def _make_item(tensors: Dict[str, Tensor], horizon: int,
@@ -309,9 +308,9 @@ class ShardedTrainDataset(Dataset):
             )
 
         # Load and concatenate all assigned shards into one tensor block
-        blocks       = []
-        n_windows    = 0
-        window_size  = context_length + horizon
+        blocks      = []
+        n_windows   = 0
+        window_size = context_length + horizon
 
         for sh in rank_shards:
             df      = pd.read_parquet(sh["path"])
@@ -323,9 +322,10 @@ class ShardedTrainDataset(Dataset):
             sample_len = sh["t1_sample"] - sh["t0_sample"]
             n_windows += max(0, sample_len - window_size + 1)
 
+        # Concatenate along time dim 0 — all tensors are [T, ...] layout
         self.x_enc          = torch.cat([b["x_enc"]          for b in blocks], dim=0)
         self.x_futr         = torch.cat([b["x_futr"]         for b in blocks], dim=0)
-        self.available_mask = torch.cat([b["available_mask"] for b in blocks], dim=1)
+        self.available_mask = torch.cat([b["available_mask"] for b in blocks], dim=0)  # [T, C]
         self.T              = self.x_enc.shape[0]
         self._n_windows     = max(1, n_windows)
 
@@ -356,9 +356,9 @@ class _ShardedEvalDataset(Dataset):
     def __init__(self, data_dir: str, filename: str,
              context_length: int, horizon: int, name: str = ""):
         self.data_dir = Path(data_dir)
-        self.ctx = context_length
-        self.horizon = horizon
-        self.name = name
+        self.ctx      = context_length
+        self.horizon  = horizon
+        self.name     = name
 
         meta             = _load_metadata(self.data_dir)
         self.channel_ids = meta["channel_ids"]
@@ -366,7 +366,7 @@ class _ShardedEvalDataset(Dataset):
         self.futr_cols   = meta["futr_exog_cols"]
         self.metadata    = _load_static(self.data_dir, meta)
 
-        path    = self.data_dir / filename
+        path = self.data_dir / filename
         if not path.exists():
             raise FileNotFoundError(
                 f"'{path}' not found. "

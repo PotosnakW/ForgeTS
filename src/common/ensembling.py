@@ -7,6 +7,7 @@ class Ensembler:
             'mean': self._cumulative_mean,
             'median': self._cumulative_median,
             'ewm': self._cumulative_ewm,
+            'identity': self._identity,
         }
         if ensemble_method not in methods:
             raise ValueError(f"ensemble_method must be one of {list(methods.keys())}")
@@ -19,13 +20,13 @@ class Ensembler:
         returns: (B, T, H, C)
         """
         B, T, H, C = preds.shape
-        masked_preds  = self.preds_reshape_for_ensembling(preds, mask) # (B, S, H, C)
+        masked_preds = self.preds_reshape_for_ensembling(preds, mask) # (B, S, H, C)
 
         # reshape to (B*S, H, C) so ensemblers stay unchanged (axis=1 is overlaps)
-        B_, test_size, H_, C_ = masked_preds.shape
-        flat = masked_preds.reshape(B_ * test_size, H_, C_) # (B*S, H, C)
+        B_, S_, H_, C_ = masked_preds.shape
+        flat = masked_preds.reshape(B_ * S_, H_, C_) # (B*S, H, C)
         ensembled = self.ensembler(flat, **self.kwargs) # (B*S, H, C)
-        ensembled_preds = ensembled.reshape(B_, test_size, H_, C_) # (B, test_size, H, C)
+        ensembled_preds = ensembled.reshape(B_, S_, H_, C_) # (B, test_size, H, C)
 
         return self.ensembled_preds_reshape_for_windows(ensembled_preds) # (B, T, H, C)
 
@@ -57,11 +58,12 @@ class Ensembler:
     def ensembled_preds_reshape_for_windows(self, ensembled_preds):
         B, S, H, C = ensembled_preds.shape
 
-        # flip H axis so diagonals align — same as before but over batch
         flipped = np.flip(ensembled_preds, axis=2) # (B, S, H, C)
-
         windows = np.lib.stride_tricks.sliding_window_view(flipped, window_shape=(H, H), axis=(1, 2))
-        return np.diagonal(windows[:, :, 0], axis1=2, axis2=3) # (B, n_windows, H, C)
+        # → (B, S-H+1, 1, C, H, H)
+        windows_diags = np.diagonal(windows[:, :, 0], axis1=3, axis2=4)  # (B, n_windows, C, H)
+        windows_diags = windows_diags.transpose(0, 1, 3, 2) # (B, n_windows, H, C)
+        return windows_diags
 
     def _cumulative_mean(self, preds, window_size=None, **kwargs):
         _, H, _ = preds.shape
@@ -100,3 +102,6 @@ class Ensembler:
         w_sum = np.einsum('hi,bic->bhc', weight_matrix, valid.astype(float))
 
         return np.where(w_sum > 0, weighted_sum / w_sum, np.nan) # (B, H, C)
+
+    def _identity(self, preds, **kwargs):
+        return preds # (B, H, C)

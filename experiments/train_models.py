@@ -19,7 +19,7 @@ from typing import Dict
 import torch
 from torch import Tensor
 
-from common.load_config import load_model_config, load_dataset_config
+from common._utils import load_model_config, load_dataset_config
 from ts_dataloader import DataLoaderFactory
 from _base_model import BaseModel
 from moment import MOMENT

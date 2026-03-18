@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from typing import Optional, Union
+import math
 
 from transformers.cache_utils import Cache, DynamicCache, EncoderDecoderCache
 from transformers.models.t5.modeling_t5 import T5LayerNorm, T5Config

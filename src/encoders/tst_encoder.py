@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Optional
 
-from tsfm_base.src.attention._mica_attention import MultiheadAttention
+from attention._mica_attention import MultiheadAttention
 from common._modules import Transpose
 
 def get_activation_fn(activation):

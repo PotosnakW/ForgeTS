@@ -16,6 +16,8 @@ class Model(nn.Module):
         self.hidden_size = config.hidden_size
         self.patch_len   = config.patch_len
         self.stride = config.stride
+        patch_num = int((config.context_length - config.patch_len) / config.stride + 1)
+        config.nf = config.hidden_size * patch_num
 
         self.tokenizer = Patching(patch_len=config.patch_len, stride=config.stride)
         self.W_P = nn.Linear(config.patch_len, config.hidden_size)

@@ -9,6 +9,7 @@ train:
     test_size: 2592 # 9 days (10% of data)
     weight: 1
     hist_exog_cols: [CHO, insulin]
+    multivariate: False
     #futr_exog_cols: []
     #stat_exog_cols: [region_id, store_type] # TODO @wpotosna
 
@@ -23,6 +24,7 @@ validation:
     test_size: 2592 # 9 days (10% of data)
     weight: 1
     hist_exog_cols: [CHO, insulin]
+    multivariate: False
     #futr_exog_cols: []
     #stat_exog_cols: [region_id, store_type] # TODO @wpotosna
   
@@ -37,5 +39,6 @@ test:
     test_size: 2592 # 9 days (10% of data)
     weight: 1
     hist_exog_cols: [CHO, insulin]
+    multivariate: False
     #futr_exog_cols: []
     #stat_exog_cols: [region_id, store_type] # TODO @wpotosna

@@ -12,6 +12,11 @@ from transformers.cache_utils import Cache, DynamicCache, EncoderDecoderCache
 from transformers.modeling_outputs import (
     BaseModelOutput,
     BaseModelOutputWithPastAndCrossAttentions,
+    Seq2SeqLMOutput,
+    Seq2SeqModelOutput,
+    Seq2SeqQuestionAnsweringModelOutput,
+    Seq2SeqSequenceClassifierOutput,
+    TokenClassifierOutput,
 )
 
 from attention._t5_mica_attention import T5LayerSelfAttention

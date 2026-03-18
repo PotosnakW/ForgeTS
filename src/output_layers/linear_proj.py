@@ -5,11 +5,11 @@ class Linear_Multivariate_Layer(nn.Module):
     """
     Flatten_Head
     """
-    def __init__(self, multivariate_head, nf, h, c_out, head_dropout=0):
+    def __init__(self, config, c_out, nf):
         super().__init__()
 
-        self.multivariate_head = multivariate_head
-        self.c_out = c_out
+        self.multivariate_head = config.multivariate_head
+        self.c_out = config.c_out
 
         if self.multivariate_head:
             self.linears = nn.ModuleList()
@@ -17,12 +17,12 @@ class Linear_Multivariate_Layer(nn.Module):
             self.flattens = nn.ModuleList()
             for i in range(self.n_vars):
                 self.flattens.append(nn.Flatten(start_dim=-2))
-                self.linears.append(nn.Linear(nf, h * c_out))
-                self.dropouts.append(nn.Dropout(head_dropout))
+                self.linears.append(nn.Linear(nf, config.h * c_out))
+                self.dropouts.append(nn.Dropout(config.head_dropout))
         else:
             self.flatten = nn.Flatten(start_dim=-2)
-            self.linear = nn.Linear(nf, h * c_out)
-            self.dropout = nn.Dropout(head_dropout)
+            self.linear = nn.Linear(nf, config.h * c_out)
+            self.dropout = nn.Dropout(config.head_dropout)
 
     def forward(self, x):  # x: [bs x n_channels x hidden_size x patch_num]
         n_channels = x.shape[1]

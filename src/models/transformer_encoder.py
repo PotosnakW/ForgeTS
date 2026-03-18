@@ -1,17 +1,15 @@
-import logging
 from types import SimpleNamespace
 
 import torch
 from torch import nn
 
 from common._base_model import BaseModel
-from common._modules import RevIN, Flatten_Head, Patching, PositionalEncoding, _make_causal_token_mask
+from common._modules import RevIN, Patching, PositionalEncoding, _make_causal_token_mask
 from encoders._base_encoder import BaseEncoder
+from output_layers._base_output_layer import BaseOutputLayer
 
-logger = logging.getLogger(__name__)
 
-
-class Encoder(nn.Module):
+class Model(nn.Module):
     def __init__(self, config):
         super().__init__()
 
@@ -28,9 +26,17 @@ class Encoder(nn.Module):
         )
         self.dropout = nn.Dropout(config.dropout)
 
-        self.encoder = BaseEncoder(config)
-        self.output_layer = BaseOutputLayer(config)
+        self.encoder = BaseEncoder().get_encoder(config=config)
+        self.output_layer = BaseOutputLayer().get_output_layer(config=config)
 
+        patch_num_inp = int((config.context_length - config.patch_len) / config.stride + 1)
+        self.patch_num_inp = patch_num_inp
+
+        if config.fcd_samples == 1:      # window sampling only
+            self.fs_ws = self._ws_output
+        else:                             # >1 or -1 → forking
+            self.fs_ws = self._fs_output
+    
     def forward(
         self,
         x_enc:          torch.Tensor,
@@ -80,41 +86,25 @@ class Encoder(nn.Module):
             attention_mask = attention_mask,
         )
         enc_out = outputs.last_hidden_state  # [B*C, n_patch, d_model]
-
-        return enc_out.reshape(
+        enc_out = enc_out.reshape(
             batch_size, n_channels, n_patch, self.hidden_size
         ) # [B, C, n_patch, d_model]
 
-class Decoder(nn.Module):
-    def __init__(self, config):
-        super().__init__()
+        enc_out = self.fs_ws(enc_out)
+        # standard: [B, C, 1, H*c_out]
+        # forking:  [B, C, T, H*c_out]
+        output = self.output_layer(enc_out)            # [B, C, H*c_out]
 
-        patch_num_inp = int((config.context_length - config.patch_len) / config.stride + 1)
-        self.patch_num_inp = patch_num_inp
+        return output
 
-        self.forecast_head = Flatten_Head(
-            multivariate_head = config.multivariate_head,
-            nf = config.hidden_size * patch_num_inp,
-            h = config.h,
-            c_out = config.c_out,
-            head_dropout = config.head_dropout,
-        )
-
-        if config.fcd_samples == 1:      # window sampling only
-            self.decode = self._decode_standard
-        else:                             # >1 or -1 → forking
-            self.decode = self._decode_forking
-
-    def _decode_standard(self, enc_out: torch.Tensor) -> torch.Tensor:
+    def _ws_output(self, enc_out: torch.Tensor) -> torch.Tensor:
         """
         enc_out : [B, C, P_std, d_model]
-        returns : [B, C, 1, H*c_out]   T=1 so forward is identical for both modes
+        returns : [B, C, 1, P_std, d_model]   T=1 so forward is identical for both modes
         """
-        B, C = enc_out.shape[:2]
-        pred = self.forecast_head(enc_out)            # [B, C, H*c_out]
-        return pred.unsqueeze(2)                   # [B, C, 1, H*c_out]  T=1 unifies both modes
+        return enc_out.unsqueeze(2)                   # [B, C, 1, P_std, d_model]  T=1 unifies both modes
 
-    def _decode_forking(self, enc_out: torch.Tensor) -> torch.Tensor:
+    def _fs_output(self, enc_out: torch.Tensor) -> torch.Tensor:
         """
         enc_out : [B, C, P_std+T-1, d_model]   T inferred from enc_out shape
         returns : [B, C, T, H*c_out]
@@ -124,22 +114,15 @@ class Decoder(nn.Module):
         step=1 patch is correct: fork_sequences already spaced raw blocks by
         stride timesteps, so consecutive patch windows are exactly 1 patch apart.
         """
-        B, C, _, d = enc_out.shape
-
-        enc_out_windows = (
+        enc_out = (
             enc_out
             .unfold(dimension=2, size=self.patch_num_inp, step=1)   # [B, C, T, d, P]
             .permute(0, 1, 2, 4, 3) # [B, C, T, P, d]
             .contiguous()
         )
-        return self.forecast_head(enc_out_windows)             # [B, C, T, H*c_out]
+        return enc_out
 
-    def forward(self, enc_out: torch.Tensor) -> torch.Tensor:
-        return self.decode(enc_out)
-        # standard: [B, C, 1, H*c_out]
-        # forking:  [B, C, T, H*c_out]
-
-class MOMENT(BaseModel):
+class TransformerEncoder(BaseModel):
     def __init__(self, config):
         super().__init__()
 
@@ -164,15 +147,14 @@ class MOMENT(BaseModel):
                 subtract_last = config.revin_subtract_last,
             )
 
-        self.encoder = Encoder(config=config)
-        self.decoder = Decoder(config=config)
+        self.model = Model(config=config)
 
     def forward(
         self,
         batch,
     ) -> torch.Tensor:
 
-        # TODO @wpotosna extend MICA for covariates
+        # TODO @wpotosna Extend MICA for covariates
 
         x = batch["insample_y"].clone() # [B, L+(T-1)*step_size, C, 1+Vh]
         input_mask = batch["available_mask"].clone()  # [B, L+(T-1)*step_size, C]
@@ -185,11 +167,10 @@ class MOMENT(BaseModel):
             x_enc_in = self.revin_layer(x_enc_in, "norm")
             x_enc_in = x_enc_in.permute(0, 2, 1)  # [B, C, seq_len]
 
-        enc_out  = self.encoder(
-            x_enc          = x_enc_in,
+        forecast = self.model(
+            x_enc = x_enc_in,
             available_mask = input_mask,           # [B, C, seq_len]
         )                                          # [B, C, P_total, d_model]
-        forecast = self.decoder(enc_out=enc_out) # both modes: [B, C, T, H*c_out]
 
         # RevIN denorm:
         if self.revin:

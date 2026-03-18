@@ -6,9 +6,7 @@ from torch import nn
 
 from common._base_model import BaseModel
 from common._modules import RevIN, Flatten_Head, Patching, PositionalEncoding, _make_causal_token_mask
-from encoders.t5_encoder import T5Model
-from encoders.tst_encoder import TSTEncoder
-from transformers import T5Config
+from encoders._base_encoder import BaseEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -30,36 +28,8 @@ class Encoder(nn.Module):
         )
         self.dropout = nn.Dropout(config.dropout)
 
-        if config.transformer_backbone in [
-            "google/t5-efficient-tiny", 
-            "google/t5-efficient-mini",
-            "google/t5-efficient-small", 
-            "google/t5-efficient-base",
-            "google/t5-efficient-large",
-        ]:
-            self.encoder = self._get_huggingface_transformer(config)
-        elif config.transformer_backbone == "patchtst":
-            self.encoder = TSTEncoder(config)
-        else:
-            raise ValueError(
-                f"transformer_backbone '{config.transformer_backbone}' not recognised."
-            )
-
-    def _get_huggingface_transformer(self, config):
-        model_config = T5Config.from_pretrained(config.transformer_backbone)
-        for attr in [
-            "infini_mixer_type", 
-            "infini_channel_exclusion",
-            "layerwise_beta",
-            "channelwise_beta",
-            "mlpmixer_hidden_size",
-            "mlpmixer_n_layers",
-            "mlpmixer_dropout",
-        ]:
-            setattr(model_config, attr, getattr(config, attr))
-        transformer = T5Model(model_config)
-        logger.info(f"Randomly initializing {config.transformer_backbone} ({T5Model.__name__}).")
-        return transformer.get_encoder()
+        self.encoder = BaseEncoder(config)
+        self.output_layer = BaseOutputLayer(config)
 
     def forward(
         self,

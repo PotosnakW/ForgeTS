@@ -1,6 +1,8 @@
 # General
 d_model: 256  # Dimension of the model, should be 256 for T5-tiny
-transformer_backbone: google/t5-efficient-tiny  # Transformer backbone to use, e.g., google/t5-efficient-tiny
+encoder: google/t5-efficient-tiny  # Transformer backbone to use, e.g., google/t5-efficient-tiny
+output_layer: linear_projection
+
 torch_dtype: "float32"
 pe_type: 'sincos'
 learn_pe: False

@@ -19,6 +19,7 @@ def _gather_block(
         grid.unsqueeze(-1).unsqueeze(-1).expand(B, block_len, *extra)
     )
 
+
 def _gather_mask(
     mask:         Tensor,   # [B, S, C]
     window_start: Tensor,   # [B]
@@ -32,6 +33,7 @@ def _gather_mask(
     ).clamp(0, S - 1)                                     # [B, block_len]
     grid = grid.unsqueeze(-1).expand(B, block_len, C)     # [B, block_len, C]
     return mask.gather(1, grid)                           # [B, block_len, C]
+
 
 def _unfold_windows(src: Tensor, size: int, step: int) -> Tensor:
     """
@@ -53,6 +55,7 @@ def _unfold_windows(src: Tensor, size: int, step: int) -> Tensor:
     ndim  = unfolded.ndim
     order = [0, 1, ndim - 1] + list(range(2, ndim - 1))
     return unfolded.permute(*order).contiguous()   # [B, n_fcds, size, C, *extra]
+
 
 def n_valid_fcds(T: int, context_length: int, horizon: int, step_size: int) -> int:
     """
@@ -95,10 +98,13 @@ def heterogeneous_sampler(
     data there. This naturally skips both left-padding AND mid-series gaps.
 
     Upper bound (scalar, same for all series):
-        window_start + block_len - 1 <= S - H - 1
-        The last FCD's horizon must not extend into the last H timesteps,
-        where targets don't exist in the training data.
-        Rearranges to: window_start <= S - block_len - H  (= max_start)
+        window_start + block_len - 1 <= S - 1
+        block_len already includes horizon, so no further subtraction needed.
+        Rearranges to: window_start <= S - block_len  (= max_start)
+
+    The train dataset is extended by H-1 masked rows from the val set, so
+    windows whose horizons land in those rows are geometrically valid but
+    contribute zero loss (available_mask=0 → outsample_mask=0).
 
     Sampling is via torch.multinomial, so each series gets an independent
     start index drawn proportionally to its own availability weights.
@@ -114,14 +120,13 @@ def heterogeneous_sampler(
     B, S, C = available_mask.shape
 
     block_len = context_length + (fcd_samples - 1) * step_size + horizon
-    max_start = S - block_len - horizon   # scalar upper bound, inclusive
+    max_start = S - block_len  # block_len already contains horizon — no double subtraction
 
     # Collapse [B, S, C] -> [B, S] via min:
     # a timestep is only a valid start if ALL channels have real data there.
     time_mask = available_mask.min(dim=2).values                          # [B, S]
 
-    # Zero out positions where the block would overflow into the last H steps.
-    # Positions 0..max_start are geometrically valid; beyond that targets don't exist.
+    # Zero out positions beyond max_start so the block never overflows the series.
     sample_weights = time_mask.clone()
     sample_weights[:, max_start + 1:] = 0.0
 
@@ -147,27 +152,33 @@ def fork_sequences(
         n_fcds = floor((enc_block_len - L - H) / step) + 1
 
     These are always COMPLETE windows — the last FCD horizon never extends
-    beyond the available data (see _unfold_windows and heterogeneous_sampler).
+    beyond the series end (see _unfold_windows and heterogeneous_sampler).
 
     fcd_samples != -1  (training)
-        heterogeneous_sampler picks window_start such that the block ends
-        at or before S - H (the reserved evaluation tail).
+        heterogeneous_sampler picks window_start such that the block fits
+        within [0, S-1]. The train series is extended by H-1 masked val rows,
+        so the last H-1 windows within train are now reachable. Predictions
+        landing in the masked extension rows have outsample_mask=0 and
+        contribute nothing to the loss.
         _unfold_windows produces exactly fcd_samples complete windows.
 
     fcd_samples == -1  (val / test)
-        The full left-padded series is consumed.
+        The full series is consumed (ctx_rows + eval rows + H-1 extension).
         _unfold_windows produces floor((S - L - H) / step) + 1 windows.
+        ctx_rows and extension rows have available_mask=0, so predictions
+        landing there have outsample_mask=0 and are excluded from the loss.
         Any incomplete trailing window is dropped — no overflow.
 
     Inputs  (left-padded, from collate)
     ------------------------------------
     x_enc          : [B, S, C, 1+Vh]
-    available_mask : [B, S, C]         0=pad/missing, 1=real
+    available_mask : [B, S, C]         0=pad/missing/extension, 1=real+in-split
 
     Outputs
     -------
     insample_y     : [B, enc_size, C, 1+Vh]    enc_size = block_len - H
     outsample_y    : [B, n_fcds,   H,  C]
+    outsample_mask : [B, n_fcds,   H,  C]      0 where loss should be ignored
     available_mask : [B, enc_size, C]
     """
     x_enc_full     = batch["x_enc"]
@@ -197,7 +208,6 @@ def fork_sequences(
         mask_block = available_mask
 
     # [B, block_len, C, 1+Vh] -> [B, n_fcds, L+H, C, 1+Vh]
-    # torch.unfold drops any trailing incomplete window automatically.
     enc_windows  = _unfold_windows(enc_block,  size=L + H, step=step_size)
     mask_windows = _unfold_windows(mask_block, size=L + H, step=step_size)
     outsample_mask = mask_windows[:, :, L:, :]               # [B, n_fcds, H, C]

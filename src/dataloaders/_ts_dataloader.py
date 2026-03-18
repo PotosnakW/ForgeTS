@@ -127,7 +127,7 @@ def _pivot_to_arrays(
         .first().loc[channel_ids].values.astype(np.float32)
         if stat_exog_cols else np.zeros((C, 0), dtype=np.float32)
     )
-    available_mask = _piv("available_mask")                 # [T, C]
+    available_mask = _piv("available_mask")              # [T, C]
 
     return y, hist, futr, stat, channel_ids, available_mask
 
@@ -179,8 +179,16 @@ class FullSeriesDataset(Dataset):
     """
     Delivers the full series to the model. fork_sequences handles all windowing.
 
-    available_mask shape: [T, C] — stored per-channel so heterogeneous_sampler
-    can find the first real timestep per channel and pick valid window starts.
+    available_mask shape: [T, C]
+        1 = real data belonging to this split (loss is computed here)
+        0 = left-padding, missing values, or out-of-split extension rows
+            (encoder may still see these; loss ignores them via outsample_mask)
+
+    Split-specific layout
+    ─────────────────────
+    train : [train rows (1)] [H-1 val rows (0)]
+    val   : [ctx rows (0)]   [val rows (1)]   [H-1 test rows (0)]
+    test  : [ctx rows (0)]   [test rows (1)]
     """
     def __init__(
         self,
@@ -202,12 +210,12 @@ class FullSeriesDataset(Dataset):
                 f"Dataset '{name}': series length {T} < "
                 f"context_length + horizon ({min_len})."
             )
-        self.y = torch.from_numpy(y)                    # [T, C]
-        self.hist = torch.from_numpy(hist)                 # [T, C, Vh]
-        self.futr = torch.from_numpy(futr)                 # [T, C, Vf]
+        self.y = torch.from_numpy(y)
+        self.hist = torch.from_numpy(hist)
+        self.futr = torch.from_numpy(futr)
         self.available_mask = torch.from_numpy(
             available_mask.astype(np.float32)
-        ).contiguous()                                               # [T, C]
+        ).contiguous()
         self.channel_ids = channel_ids or [str(i) for i in range(C)]
         self.metadata = metadata
         self.ctx = context_length
@@ -226,17 +234,17 @@ class FullSeriesDataset(Dataset):
             if self.hist.shape[-1] > 0 else y_enc
         )                                                            # [T, C, 1+Vh]
         out = dict(
-            x_enc = x_enc,                                # [T, C, 1+Vh]
-            x_futr = self.futr,                            # [T, C, Vf]
-            available_mask = self.available_mask,                  # [T, C]
-            series_len = torch.tensor(self.T,       dtype=torch.long),
-            horizon = torch.tensor(self.horizon, dtype=torch.long),
-            dataset_name = self.name,
-            channel_ids = self.channel_ids,
+            x_enc           = x_enc,
+            x_futr          = self.futr,
+            available_mask  = self.available_mask,
+            series_len      = torch.tensor(self.T,       dtype=torch.long),
+            horizon         = torch.tensor(self.horizon, dtype=torch.long),
+            dataset_name    = self.name,
+            channel_ids     = self.channel_ids,
             is_multivariate = self.is_multivariate,
         )
         if self.metadata is not None and self.metadata.data.shape[-1] > 0:
-            out["x_stat"] = self.metadata.data                      # [C, n_stat]
+            out["x_stat"] = self.metadata.data
         return out
 
 
@@ -271,6 +279,28 @@ def _ctx(mcfg) -> int:
     return getattr(mcfg, "input_size", None) or getattr(mcfg, "context_length", 512)
 
 
+def _extend_with_next_split(df: pd.DataFrame, next_df: pd.DataFrame, horizon: int) -> pd.DataFrame:
+    """
+    Append the first H-1 rows of next_df per series to df, with available_mask=0.
+    These act as a buffer so windows near the split boundary can form without
+    their horizons overflowing, while contributing zero loss.
+    Only applied when horizon > 1 and next_df is non-empty.
+    """
+    if next_df is None or len(next_df) == 0 or horizon <= 1:
+        return df
+    extension = (
+        next_df.groupby("unique_id", sort=False)
+        .head(horizon - 1)
+        .copy()
+    )
+    extension["available_mask"] = 0.0
+    return (
+        pd.concat([df, extension])
+        .sort_values(["unique_id", "ds"])
+        .reset_index(drop=True)
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Collation — left-pad time, right-pad channels/features
 # ─────────────────────────────────────────────────────────────────────────────
@@ -284,29 +314,29 @@ def _pad_left(t: Tensor, target_len: int) -> Tensor:
 
 
 def _full_series_collate_fn(batch):
-    T_max = max(s["x_enc"].shape[0]      for s in batch)
-    C_max = max(s["x_enc"].shape[-2]     for s in batch)
+    T_max  = max(s["x_enc"].shape[0]      for s in batch)
+    C_max  = max(s["x_enc"].shape[-2]     for s in batch)
     Vh_max = max(s["x_enc"].shape[-1] - 1 for s in batch)
 
-    B = len(batch)
+    B            = len(batch)
     channel_mask = torch.zeros(B, C_max,          dtype=torch.float32)
-    hist_mask = torch.zeros(B, max(Vh_max, 1), dtype=torch.float32)
+    hist_mask    = torch.zeros(B, max(Vh_max, 1), dtype=torch.float32)
 
-    out_x_enc = []
-    out_mask = []
+    out_x_enc  = []
+    out_mask   = []
     out_x_stat = [] if any("x_stat" in s for s in batch) else None
 
     for i, s in enumerate(batch):
-        T_i = s["x_enc"].shape[0]
-        C_i = s["x_enc"].shape[-2]
+        T_i  = s["x_enc"].shape[0]
+        C_i  = s["x_enc"].shape[-2]
         Vh_i = s["x_enc"].shape[-1] - 1
 
-        x = F.pad(s["x_enc"], (0, Vh_max - Vh_i, 0, C_max - C_i))  # [T_i, C_max, 1+Vh_max]
-        x = _pad_left(x, T_max)                                       # [T_max, C_max, 1+Vh_max]
+        x = F.pad(s["x_enc"], (0, Vh_max - Vh_i, 0, C_max - C_i))
+        x = _pad_left(x, T_max)
         out_x_enc.append(x)
 
-        m = F.pad(s["available_mask"], (0, C_max - C_i))             # [T_i, C_max]
-        m = _pad_left(m, T_max)                                       # [T_max, C_max]
+        m = F.pad(s["available_mask"], (0, C_max - C_i))
+        m = _pad_left(m, T_max)
         out_mask.append(m)
 
         channel_mask[i, :C_i] = 1.0
@@ -321,19 +351,19 @@ def _full_series_collate_fn(batch):
                 out_x_stat.append(torch.zeros(C_max, 1))
 
     result = dict(
-        x_enc = torch.stack(out_x_enc),
-        available_mask = torch.stack(out_mask),
-        channel_mask = channel_mask,
-        hist_mask = hist_mask,
-        dataset_name = [s.get("dataset_name", "unknown") for s in batch],
-        channel_ids = [s.get("channel_ids",  [])        for s in batch],
+        x_enc           = torch.stack(out_x_enc),
+        available_mask  = torch.stack(out_mask),
+        channel_mask    = channel_mask,
+        hist_mask       = hist_mask,
+        dataset_name    = [s.get("dataset_name", "unknown") for s in batch],
+        channel_ids     = [s.get("channel_ids",  [])        for s in batch],
         is_multivariate = batch[0].get("is_multivariate", False),
     )
     for key in ("series_len", "horizon"):
         if key in batch[0]:
             result[key] = torch.stack([s[key] for s in batch])
     if out_x_stat:
-        result["x_stat"] = torch.stack(out_x_stat)                   # [B, C_max, n_stat]
+        result["x_stat"] = torch.stack(out_x_stat)
 
     return result
 
@@ -360,9 +390,9 @@ class HorizonBatchSampler(Sampler):
 
     def __init__(
         self,
-        group_datasets,   # Dict[(horizon, is_multivariate), List[Dataset]]
-        group_weights,    # Dict[(horizon, is_multivariate), List[float]]
-        global_offsets,   # Dict[(horizon, is_multivariate), List[int]]
+        group_datasets,
+        group_weights,
+        global_offsets,
         batch_size,
         mixing_strategy="concat",
         shuffle=True,
@@ -371,26 +401,26 @@ class HorizonBatchSampler(Sampler):
         rank=0,
         world_size=1,
     ):
-        self.group_datasets = group_datasets
-        self.group_weights = group_weights
-        self.global_offsets = global_offsets
-        self.batch_size = batch_size
+        self.group_datasets  = group_datasets
+        self.group_weights   = group_weights
+        self.global_offsets  = global_offsets
+        self.batch_size      = batch_size
         self.mixing_strategy = mixing_strategy
-        self.shuffle = shuffle
-        self.drop_last = drop_last
-        self.seed = seed
-        self.rank = rank
-        self.world_size = world_size
-        self._epoch = 0
-        self.groups = sorted(group_datasets.keys())  # (horizon, is_multivariate) tuples
+        self.shuffle         = shuffle
+        self.drop_last       = drop_last
+        self.seed            = seed
+        self.rank            = rank
+        self.world_size      = world_size
+        self._epoch          = 0
+        self.groups          = sorted(group_datasets.keys())
 
     def set_epoch(self, epoch: int):
         self._epoch = epoch
 
-    def _group_batches(self, group_key, rng):               # FIX 1: was (self, horizon, rng)
+    def _group_batches(self, group_key, rng):
         datasets = self.group_datasets[group_key]
-        weights = self.group_weights[group_key]
-        offsets = self.global_offsets[group_key]
+        weights  = self.group_weights[group_key]
+        offsets  = self.global_offsets[group_key]
 
         per_ds = []
         for ds, offset in zip(datasets, offsets):
@@ -399,23 +429,21 @@ class HorizonBatchSampler(Sampler):
                 rng.shuffle(idxs)
             per_ds.append(idxs)
 
-        # Exhaustive mode — every item exactly once, no cycling, no weighting.
-        # Triggered when shuffle=False and all weights are equal (eval path).
         if not self.shuffle and len(set(weights)) == 1:
-            pool = [idx for idxs in per_ds for idx in idxs.tolist()]
-            bs = self.batch_size
+            pool    = [idx for idxs in per_ds for idx in idxs.tolist()]
+            bs      = self.batch_size
             batches = [pool[i : i + bs] for i in range(0, len(pool) - bs + 1, bs)]
             if not self.drop_last and len(pool) % bs:
                 batches.append(pool[-(len(pool) % bs):])
             return batches
 
-        total = sum(len(a) for a in per_ds)
-        w_arr = np.array(weights, dtype=np.float64)
-        w_arr = w_arr / w_arr.sum()
+        total     = sum(len(a) for a in per_ds)
+        w_arr     = np.array(weights, dtype=np.float64)
+        w_arr     = w_arr / w_arr.sum()
         slots_per = (w_arr * total).round().astype(int)
         slots_per[np.argmax(slots_per)] += total - slots_per.sum()
 
-        pool = []
+        pool     = []
         ds_iters = [itertools.cycle(a.tolist()) for a in per_ds]
         for slots, it in zip(slots_per, ds_iters):
             pool.extend(itertools.islice(it, int(slots)))
@@ -424,7 +452,7 @@ class HorizonBatchSampler(Sampler):
 
         if self.world_size > 1:
             total_slots = self.batch_size * self.world_size
-            pad = (-len(pool)) % total_slots
+            pad  = (-len(pool)) % total_slots
             pool = pool + pool[:pad]
             rank_size = len(pool) // self.world_size
             pool = pool[self.rank * rank_size : (self.rank + 1) * rank_size]
@@ -432,19 +460,19 @@ class HorizonBatchSampler(Sampler):
         if self.drop_last:
             pool = pool[: (len(pool) // self.batch_size) * self.batch_size]
 
-        bs = self.batch_size
+        bs      = self.batch_size
         batches = [pool[i : i + bs] for i in range(0, len(pool) - bs + 1, bs)]
         if not self.drop_last and len(pool) % bs:
             batches.append(pool[-(len(pool) % bs):])
         return batches
 
     def __iter__(self):
-        rng = np.random.default_rng(self.seed + self._epoch)
+        rng               = np.random.default_rng(self.seed + self._epoch)
         group_batch_lists = {g: self._group_batches(g, rng) for g in self.groups}
 
         if self.mixing_strategy == "round_robin":
-            iters = {g: iter(b) for g, b in group_batch_lists.items()}
-            active = list(self.groups)                              # FIX 2: was self.horizons
+            iters  = {g: iter(b) for g, b in group_batch_lists.items()}
+            active = list(self.groups)
             while active:
                 exhausted = []
                 for g in active:
@@ -458,7 +486,7 @@ class HorizonBatchSampler(Sampler):
         else:
             all_batches = [b for bl in group_batch_lists.values() for b in bl]
             if self.shuffle:
-                order = rng.permutation(len(all_batches)).tolist()
+                order       = rng.permutation(len(all_batches)).tolist()
                 all_batches = [all_batches[i] for i in order]
             yield from all_batches
 
@@ -480,7 +508,7 @@ class DataLoaderFactory:
     def __init__(self, mcfg, dcfg):
         self.mcfg = mcfg
         self.dcfg = dcfg
-        self._horizon_groups: Dict[tuple, list] = defaultdict(list)  # key: (horizon, is_multivariate)
+        self._horizon_groups: Dict[tuple, list] = defaultdict(list)
         self._build_train()
 
         seed = getattr(self.mcfg, "seed", 42)
@@ -494,8 +522,8 @@ class DataLoaderFactory:
     def _build_train(self):
         from dataloaders.ts_sharding import ShardedTrainDataset
         for entry in self.dcfg.train:
-            is_multivariate = getattr(entry, "multivariate", False)  # FIX 5: safe fallback
-            group_key = (entry.horizon, is_multivariate)       # FIX 3: composite key
+            is_multivariate = getattr(entry, "multivariate", False)
+            group_key = (entry.horizon, is_multivariate)
 
             if getattr(entry, "sharded_dir", None):
                 ds = ShardedTrainDataset(
@@ -509,10 +537,15 @@ class DataLoaderFactory:
                 continue
 
             df = _load_df(entry.path)
-            train_df, _, _ = _split_df(
+            train_df, val_df, _ = _split_df(
                 df, entry.val_size, entry.test_size,
                 per_series_split=entry.per_series_split,
             )
+            # Extend train with H-1 val rows (mask=0) so windows near the
+            # train/val boundary can form. Predictions landing in these rows
+            # have outsample_mask=0 and don't contribute to the loss.
+            train_df = _extend_with_next_split(train_df, val_df, entry.horizon)
+
             y, hist, futr, stat, channel_ids, available_mask = self._arrays_from_df(
                 train_df, entry
             )
@@ -524,11 +557,6 @@ class DataLoaderFactory:
             self._horizon_groups[group_key].append((ds, entry.weight, entry.name))
 
     def rebuild_for_rank(self, rank: int, world_size: int) -> "DataLoaderFactory":
-        """
-        Rebuild sharded train datasets for a specific rank.
-        Called by _distributed_worker after rank/world_size are known.
-        Non-sharded datasets are unaffected.
-        """
         self._rank = rank
         self._world_size = world_size
         self._horizon_groups.clear()
@@ -536,7 +564,7 @@ class DataLoaderFactory:
         return self
 
     def _build_eval_dataset(self, entry, split: str) -> Dataset:
-        is_multivariate = getattr(entry, "multivariate", False)      # FIX 5: safe fallback
+        is_multivariate = getattr(entry, "multivariate", False)
 
         if getattr(entry, "sharded_dir", None):
             if split == "val":
@@ -565,9 +593,22 @@ class DataLoaderFactory:
         if eval_df is None or len(eval_df) == 0:
             raise ValueError(f"Dataset '{entry.name}': '{split}' split is empty.")
 
+        # Extend val with H-1 test rows (mask=0) so windows near the val/test
+        # boundary can form. Test is not extended — no data beyond it exists.
+        if split == "val":
+            eval_df = _extend_with_next_split(eval_df, test_df, entry.horizon)
+
+        # Prepend context rows from train so the encoder has lookback at the
+        # start of the eval window. ctx_rows get mask=0 — encoder sees them
+        # but predictions landing here don't contribute to the loss.
         if entry.use_context_head and train_df is not None and len(train_df) > 0:
-            ctx_rows = train_df.groupby("unique_id", sort=False).tail(_ctx(self.mcfg))
-            eval_df = pd.concat([ctx_rows, eval_df]).sort_values(["unique_id", "ds"])
+            ctx_rows = train_df.groupby("unique_id", sort=False).tail(_ctx(self.mcfg)).copy()
+            ctx_rows["available_mask"] = 0.0
+            eval_df = (
+                pd.concat([ctx_rows, eval_df])
+                .sort_values(["unique_id", "ds"])
+                .reset_index(drop=True)
+            )
 
         y, hist, futr, stat, channel_ids, available_mask = self._arrays_from_df(
             eval_df, entry
@@ -579,13 +620,13 @@ class DataLoaderFactory:
         )
 
     def _make_horizon_batch_sampler(self, rank=0, world_size=1):
-        all_datasets = []
+        all_datasets   = []
         group_datasets = defaultdict(list)
-        group_weights = defaultdict(list)
+        group_weights  = defaultdict(list)
         global_offsets = defaultdict(list)
-        flat_offset = 0
+        flat_offset    = 0
 
-        for group_key in sorted(self._horizon_groups.keys()):        # FIX 3: composite key
+        for group_key in sorted(self._horizon_groups.keys()):
             for ds, weight, _ in self._horizon_groups[group_key]:
                 global_offsets[group_key].append(flat_offset)
                 group_datasets[group_key].append(ds)
@@ -594,16 +635,16 @@ class DataLoaderFactory:
                 flat_offset += len(ds)
 
         combined = ConcatDataset(all_datasets)
-        sampler = HorizonBatchSampler(
-            group_datasets = group_datasets,
-            group_weights = group_weights,
-            global_offsets = global_offsets,
-            batch_size = self.mcfg.batch_size,
+        sampler  = HorizonBatchSampler(
+            group_datasets  = group_datasets,
+            group_weights   = group_weights,
+            global_offsets  = global_offsets,
+            batch_size      = self.mcfg.batch_size,
             mixing_strategy = self.mcfg.mixing_strategy,
-            shuffle = True,
-            drop_last = self.mcfg.drop_last,
-            rank = rank,
-            world_size = world_size,
+            shuffle         = True,
+            drop_last       = self.mcfg.drop_last,
+            rank            = rank,
+            world_size      = world_size,
         )
         return combined, sampler
 
@@ -611,15 +652,15 @@ class DataLoaderFactory:
         if not self._horizon_groups:
             raise RuntimeError("No training datasets configured.")
         combined, batch_sampler = self._make_horizon_batch_sampler(
-            rank = rank       if distributed else 0,
+            rank       = rank       if distributed else 0,
             world_size = world_size if distributed else 1,
         )
         return DataLoader(
             combined,
-            batch_sampler = batch_sampler,
-            num_workers = self.mcfg.num_workers,
-            pin_memory = True,
-            collate_fn = _full_series_collate_fn,
+            batch_sampler      = batch_sampler,
+            num_workers        = self.mcfg.num_workers,
+            pin_memory         = True,
+            collate_fn         = _full_series_collate_fn,
             persistent_workers = self.mcfg.num_workers > 0,
         )
 
@@ -628,12 +669,12 @@ class DataLoaderFactory:
         group_weights:  Dict[tuple, list] = defaultdict(list)
         global_offsets: Dict[tuple, list] = defaultdict(list)
         all_datasets = []
-        flat_offset = 0
+        flat_offset  = 0
 
         for entry in entries:
-            ds = self._build_eval_dataset(entry, split)
+            ds              = self._build_eval_dataset(entry, split)
             is_multivariate = getattr(entry, "multivariate", False)
-            group_key = (entry.horizon, is_multivariate)       # FIX 4: composite key
+            group_key       = (entry.horizon, is_multivariate)
 
             global_offsets[group_key].append(flat_offset)
             group_datasets[group_key].append(ds)
@@ -642,35 +683,35 @@ class DataLoaderFactory:
             flat_offset += len(ds)
 
         combined = all_datasets[0] if len(all_datasets) == 1 else ConcatDataset(all_datasets)
-        sampler = HorizonBatchSampler(
-            group_datasets = group_datasets,
-            group_weights = {g: [1.0] * len(ds_list) for g, ds_list in group_datasets.items()},
-            global_offsets = global_offsets,
-            batch_size = self.mcfg.valid_batch_size,
+        sampler  = HorizonBatchSampler(
+            group_datasets  = group_datasets,
+            group_weights   = {g: [1.0] * len(ds_list) for g, ds_list in group_datasets.items()},
+            global_offsets  = global_offsets,
+            batch_size      = self.mcfg.valid_batch_size,
             mixing_strategy = self.mcfg.mixing_strategy,
-            shuffle = False,
-            drop_last = False,
-            rank = 0,
-            world_size = 1,
+            shuffle         = False,
+            drop_last       = False,
+            rank            = 0,
+            world_size      = 1,
         )
         return DataLoader(
             combined,
-            batch_sampler = sampler,
-            num_workers = self.mcfg.num_workers,
-            pin_memory = True,
-            collate_fn = _full_series_collate_fn,
+            batch_sampler      = sampler,
+            num_workers        = self.mcfg.num_workers,
+            pin_memory         = True,
+            collate_fn         = _full_series_collate_fn,
             persistent_workers = self.mcfg.num_workers > 0,
         )
 
     def val_dataloaders(self, epoch: int = 0) -> Dict[str, DataLoader]:
         strategy = getattr(self.mcfg, "val_strategy", "exhaustive")
-        rng = np.random.default_rng(int(self._val_rng.integers(2**32)) + epoch)
+        rng      = np.random.default_rng(int(self._val_rng.integers(2**32)) + epoch)
 
         if strategy == "exhaustive":
             return {"val": self._make_eval_dataloader(self.dcfg.validation, "val")}
 
         elif strategy == "random_datasets":
-            k = getattr(self.mcfg, "val_max_datasets", len(self.dcfg.validation))
+            k       = getattr(self.mcfg, "val_max_datasets", len(self.dcfg.validation))
             indices = rng.choice(len(self.dcfg.validation), size=min(k, len(self.dcfg.validation)), replace=False)
             entries = [self.dcfg.validation[i] for i in indices]
             return {"val": self._make_eval_dataloader(entries, "val")}
@@ -697,13 +738,13 @@ class DataLoaderFactory:
             ds = self._build_eval_dataset(entry, split)
             loaders[entry.name] = DataLoader(
                 ds,
-                batch_size = self.mcfg.valid_batch_size,
-                shuffle = False,
-                sampler = None,
-                num_workers = self.mcfg.num_workers,
-                pin_memory = True,
-                drop_last = False,
-                collate_fn = _full_series_collate_fn,
+                batch_size         = self.mcfg.valid_batch_size,
+                shuffle            = False,
+                sampler            = None,
+                num_workers        = self.mcfg.num_workers,
+                pin_memory         = True,
+                drop_last          = False,
+                collate_fn         = _full_series_collate_fn,
                 persistent_workers = self.mcfg.num_workers > 0,
             )
         return loaders

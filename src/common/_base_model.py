@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 import torch.distributed as dist
 from tqdm import tqdm
 
-from .utils import EarlyStopper
+from ._utils import EarlyStopper
 from dataloaders._forking_sequences import fork_sequences
 from losses.torch_losses import get_loss
 

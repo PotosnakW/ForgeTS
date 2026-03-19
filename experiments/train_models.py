@@ -1,25 +1,9 @@
-"""
-train_moment.py
-───────────────
-    python train_moment.py
-    python train_moment.py --base_cfg  configs/base_config.yaml \
-                           --model_cfg configs/moment_config.yaml \
-                           --data_cfg  configs/dataset_config.yaml
-    python train_moment.py --resume checkpoints/ckpt_step=0002000.pt
-"""
-
-from __future__ import annotations
-
-import argparse
 import logging
-from pathlib import Path
-from types import SimpleNamespace
-from typing import Dict
-
 import torch
-from torch import Tensor
+import hydra
+from omegaconf import DictConfig, OmegaConf
+import yaml
 
-from common._utils import load_model_config, load_dataset_config
 from ts_dataloader import DataLoaderFactory
 from _base_model import BaseModel
 from moment import MOMENT
@@ -33,51 +17,48 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--base_cfg",  default="configs/base_config.yaml")
-    p.add_argument("--model_cfg", default="configs/moment_config.yaml")
-    p.add_argument("--data_cfg",  default="configs/dataset_config.yaml")
-    p.add_argument("--resume",    default=None)
-    p.add_argument("--seed",      default=None)
-    p.add_argument("--device",    default=None)
-    return p.parse_args()
+# ── Custom resolver: allows ${load:conf/dataset/simglucose.yaml} in split configs ──
+def _load_dataset_file(path: str) -> dict:
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+OmegaConf.register_new_resolver("load", _load_dataset_file)
 
 
-def main():
-    args   = parse_args()
-    device = torch.device(args.device) if args.device else None
+@hydra.main(config_path="conf", config_name="config", version_base=None)
+def main(cfg: DictConfig) -> None:
 
-    # ── 1. Configs ───────────────────────────────────────────────
-    mcfg = load_model_config(args.base_cfg, args.model_cfg)
-    dcfg = load_dataset_config(args.data_cfg)
+    # ── 0. Log full resolved config ──────────────────────────
+    logger.info("Config:\n%s", OmegaConf.to_yaml(cfg))
 
-    # horizon comes straight from the dataset config — no batch peeking needed
-    mcfg.h = dcfg.train[0].horizon
+    # ── 1. Device ────────────────────────────────────────────
+    device = torch.device(cfg.device)
 
-    # ── 2. Data ──────────────────────────────────────────────────
-    factory      = DataLoaderFactory(mcfg, dcfg)
+    # ── 2. Horizon (from first train dataset) ────────────────
+    cfg.model.h = cfg.dataset.train[0].horizon
+
+    # ── 3. Data ──────────────────────────────────────────────
+    factory      = DataLoaderFactory(cfg.model, cfg.dataset)
     train_loader = factory.train_dataloader()
     val_loaders  = factory.val_dataloaders()
 
-    # ── 3. Model ─────────────────────────────────────────────────
-    # n_channels is NOT passed — MOMENT infers it from each batch in forward()
-    model    = MOMENT(mcfg)
+    # ── 4. Model ─────────────────────────────────────────────
+    model    = MOMENT(cfg.model)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info("MOMENT parameters: %s", f"{n_params:,}")
 
-    # ── 5-8. Train ───────────────────────────────────────────────
+    # ── 5. Train ─────────────────────────────────────────────
     train(
         model        = model,
-        mcfg         = mcfg,
+        mcfg         = cfg.model,
         train_loader = train_loader,
         val_loaders  = val_loaders,
         device       = device,
-        seed         = args.seed,
-        resume       = args.resume,
+        seed         = cfg.base.seed,
+        resume       = cfg.get("resume", None),
     )
 
-    # ── 9. Evaluate on test set ──────────────────────────────────
+    # ── 6. Test ──────────────────────────────────────────────
     eval_test(model, factory)
 
 

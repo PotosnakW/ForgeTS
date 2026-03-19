@@ -1,0 +1,8 @@
+defaults:
+  - base: default
+  - model: tstmomentmica
+  - dataset: default
+  - _self_
+
+device: cuda
+resume: null

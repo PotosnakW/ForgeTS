@@ -1,0 +1,8 @@
+train:
+  - ${load:conf/dataset/simglucose.yaml}
+
+validation:
+  - ${load:conf/dataset/simglucose.yaml}
+
+test:
+  - ${load:conf/dataset/simglucose.yaml}

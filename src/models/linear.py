@@ -12,16 +12,16 @@ class TinyLinearModel(BaseModel):
     def __init__(self, mcfg):
         super().__init__()
         context_length = mcfg.context_length
-        horizon        = mcfg.horizon
-        n_channels     = mcfg.n_channels
-        n_hist         = getattr(mcfg, "n_hist", 1)
+        h = mcfg.h
+        n_channels = mcfg.n_channels
+        n_hist = getattr(mcfg, "n_hist", 1)
 
-        in_features  = context_length * n_channels * (1 + n_hist)
-        out_features = horizon * n_channels
-        self.fc  = nn.Linear(in_features, out_features)
+        in_features = context_length * n_channels * (1 + n_hist)
+        out_features = h * n_channels
+        self.fc = nn.Linear(in_features, out_features)
         self._ctx = context_length
-        self._H   = horizon
-        self._C   = n_channels
+        self.h = h
+        self.n_channels = n_channels
 
     def forward(self, batch):
         # insample_y : [B, enc_size, C, 1+Vh]
@@ -41,4 +41,4 @@ class TinyLinearModel(BaseModel):
             flat = flat[:, :expected]
 
         out = self.fc(flat)                                           # [B*n_fcds, H*C]
-        return out.reshape(B, n_fcds, self._H, self._C)
+        return out.reshape(B, n_fcds, self.h, self.n_channels)

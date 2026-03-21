@@ -15,7 +15,7 @@
 | 1  | [Core Concepts](#core-concepts)                   |
 | 2  | [Quick Start](#quick-start)                       |
 | 3  | [Dataloaders](#dataloaders)                       |
-| 4  | [Forking Sequences](#forking-sequences)           |
+| 4  | [Forking-Sequences](#forking-sequences)           |
 | 5  | [Training](#training)                             |
 | 6  | [Loss Functions](#loss-functions)                 |
 | 7  | [Validation Strategies](#validation-strategies)   |
@@ -202,7 +202,14 @@ Groups datasets by horizon so all items in a batch share the same `H`. Required 
 
 <br>
 
-## Forking Sequences
+## Forking-sequences
+
+<img src="figures/fs_grid_diagram.pdf" alt="grid" width="500"/>
+Fig. Example of a forking-sequences target grid. The validation set, marked in blue, corresponds to the data
+between the dotted lines, while the test set is shown in orange. Forking-sequences architectures generate forecasts for
+all FCDs simultaneously by reusing the encoder’s computations, whereas window-sampling produces forecasts for each
+FCD independently. A masking strategy depicted with hatching lines prevents temporal leakge.
+
 
 ```python
 from dataloaders._forking_sequences import fork_sequences, n_valid_fcds

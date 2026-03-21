@@ -204,7 +204,8 @@ Groups datasets by horizon so all items in a batch share the same `H`. Required 
 
 ## Forking-sequences
 
-<img src="figures/fs_grid_diagram.pdf" alt="grid" width="500"/>
+<img src="figures/fs_grid_diagram.png" alt="grid" width="500"/>
+
 Fig. Example of a forking-sequences target grid. The validation set, marked in blue, corresponds to the data
 between the dotted lines, while the test set is shown in orange. Forking-sequences architectures generate forecasts for
 all FCDs simultaneously by reusing the encoder’s computations, whereas window-sampling produces forecasts for each

@@ -12,8 +12,8 @@
 
 | | Section |
 |---|---|
-| 1  | [Core Concepts](#core-concepts)                   |
-| 2  | [Quick Start](#quick-start)                       |
+| 1  | [Quick Start](#quick-start)                       |
+| 2  | [Model Building](#model-building)                 |
 | 3  | [Dataloaders](#dataloaders)                       |
 | 4  | [Forking-Sequences](#forking-sequences)           |
 | 5  | [Training](#training)                             |
@@ -22,50 +22,8 @@
 | 8  | [Distributed Training](#distributed-training)     |
 | 9  | [Data Sharding](#data-sharding)                   |
 | 10 | [Inference & Predictions](#inference--predictions)|
-| 11 | [License](#license)                               |
-
-<br>
-
----
-
-<br>
-
-## Core Concepts
-
-<br>
-
-### Forking Sequence Training (FCD)
-
-Rather than training on fixed windows, each training step samples a random anchor point per series and unfolds `fcd_samples` overlapping context-forecast pairs from it. This gives the model exposure to many temporal positions per step without loading more data.
-
-```
-anchor →  [───── context (L) ─────][── horizon (H) ──]   FCD 0
-            step →  [───── context ─────][── horizon ──]   FCD 1
-                step →  [───── context ─────][── horizon ──]   FCD 2
-```
-
-| Mode | `fcd_samples` | Behaviour |
-|---|---|---|
-| Training | `> 1` | `heterogeneous_sampler` picks a random valid anchor per series |
-| Val / Test | `-1` | Full series — all valid FCD windows exhausted |
-
-<br>
-
-### Heterogeneous Batching
-
-Multiple datasets with different numbers of channels, series lengths, and missing data patterns can be combined in a single batch. The collation layer:
-
-- **Left-pads** time to the longest series in the batch
-- **Right-pads** channels to `C_max` with zeros
-- **`available_mask [B, C, T]`** encodes both padding and mid-series gaps — zero means "don't use this element"
-
-<br>
-
-### Foundation Model Design
-
-- Single model trained across many datasets simultaneously
-- Weighted mixing controls dataset influence during training
-- `outsample_mask` propagates through `fork_sequences` so loss is only computed over real, observed timesteps — padded channels and missing values are automatically excluded
+| 11 | [Forecast Ensembling](#forecast-ensembling)       |
+| 12 | [License](#license)                               |
 
 <br>
 
@@ -122,11 +80,58 @@ metrics = train(model, mcfg, train_loader, val_loaders, device=torch.device("cud
 results = eval_test(model, factory, device=torch.device("cuda"))
 ```
 
+
 <br>
 
 ---
 
 <br>
+
+
+## Model Building
+
+Select encoder, decoder, and output layer via the model config.
+Any component can be set to `none` to skip it.
+```yaml
+d_model: 256
+encoder: patchtst      # or none
+decoder: none          # or transformer, google/t5-efficient-tiny, etc.
+output_layer: linear_proj  # or none
+```
+
+### Encoders
+
+| `encoder` | Notes |
+|---|---|
+| `patchtst` | PatchTST-style transformer — recommended default |
+| `google/t5-efficient-tiny` | T5 backbone — use `d_model: 256` |
+| `google/t5-efficient-mini` | |
+| `google/t5-efficient-small` | |
+| `google/t5-efficient-base` | |
+| `google/t5-efficient-large` | |
+| `none` | No encoder — input passed directly to decoder or output layer |
+
+### Decoders
+TODO @wpotosna
+
+| `decoder` | Notes |
+|---|---|
+| `none` | No decoder — encoder output passed directly to output layer |
+
+### Output Layers
+
+| `output_layer` | Notes |
+|---|---|
+| `linear_proj` | Projects to `[B, n_fcds, H, C]`; expands to `C × Q` for quantile models |
+| `none` | No projection — returns encoder/decoder output as-is |
+
+
+<br>
+
+---
+
+<br>
+
 
 ## Dataloaders
 
@@ -705,6 +710,56 @@ for i, uid in enumerate(results["simglucose"]["channel_ids"]):
 
 <br>
 
+## Forecast Ensembling
+
+Because forking sequences produce multiple overlapping predictions for any
+given future timestep, ensembling these overlaps can meaningfully reduce
+variance before computing final metrics.
+```python
+from common.ensembling import Ensembler
+
+ensembler = Ensembler(ensemble_method='mean')
+smoothed  = ensembler.ensemble(preds, mask=outsample_mask)
+# [B, T, H, C]  →  [B, T, H, C]
+```
+
+### Methods
+
+| `ensemble_method` | Behaviour | Key kwargs |
+|---|---|---|
+| `mean`     | Cumulative (or windowed) mean over overlapping windows   | `window_size=None` |
+| `median`   | Cumulative (or windowed) median — robust to outlier windows | `window_size=None` |
+| `ewm`      | Exponentially weighted mean — recency-biased             | `alpha=0.5`, `window_size=None` |
+| `identity` | No aggregation — pass-through                           | — |
+
+`window_size=None` uses all available overlapping windows. Set an integer
+to limit aggregation to the N most recent overlaps.
+
+### Masking
+
+Pass `outsample_mask` directly — masked timesteps (`0`) are treated as
+`NaN` internally and excluded from every aggregation operation, so padded
+channels and missing values never contaminate the ensemble.
+
+### Typical Usage
+```python
+results = eval_test(model, factory, device=torch.device("cuda"))
+
+preds = results["simglucose"]["preds"].numpy()           # [n_fcds, H, C]
+mask  = results["simglucose"]["outsample_mask"].numpy()  # [n_fcds, H, C]
+
+# Ensembler expects [B, T, H, C] — add batch dim
+ensembler = Ensembler(ensemble_method='ewm', alpha=0.3)
+smoothed  = ensembler.ensemble(preds[None], mask=mask[None])[0]  # [n_fcds, H, C]
+
+print("Ensemble MAE:", mae(smoothed, targets, mask))
+```
+
+<br>
+
+---
+
+<br>
 
 ## License
 

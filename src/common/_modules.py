@@ -4,6 +4,11 @@ from torch import nn
 import math
 
 
+class IdentityLayer(nn.Module):
+    """Drop-in replacement when encoder, decoder, or output_layer is set to 'none'."""
+    def forward(self, x, **kwargs):
+        return x
+    
 class MLP(nn.Module):
     """Multi-Layer Perceptron Class
 

@@ -1,6 +1,7 @@
 # General
 d_model: 256  # Dimension of the model, should be 256 for T5-tiny
-encoder: google/t5-efficient-tiny  # Transformer backbone to use, e.g., google/t5-efficient-tiny
+encoder: patchtst 
+decoder: none
 output_layer: linear_projection
 
 torch_dtype: "float32"
@@ -31,7 +32,7 @@ loss: quantlie_loss
 quantiles: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
 # MICA variants
-infini_mixer_type: 'none'
+infini_mixer_type: none
 infini_channel_exclusion: False
 layerwise_beta: False
 channelwise_beta: False

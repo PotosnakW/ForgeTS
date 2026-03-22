@@ -1,5 +1,6 @@
 import logging
-logger = logging.getLogger(__name__)
+from common._modules import IdentityLayer
+
 
 class BaseEncoder:
     def __init__(self):
@@ -22,22 +23,27 @@ class BaseEncoder:
             setattr(model_config, attr, getattr(config, attr))
 
         transformer = T5Model(model_config)
-        logger.info(f"Randomly initializing {config.encoder} ({T5Model.__name__}).")
         return transformer.get_encoder()
 
     def get_encoder(self, config):
-        if config.encoder in [
+        encoder_key = getattr(config, "encoder", "none")
+    
+        if encoder_key is None or str(encoder_key).lower() == "none":
+            print("No encoder selected — using identity pass-through.")
+            return IdentityLayer()
+        
+        elif config.encoder in [
             "google/t5-efficient-tiny",
             "google/t5-efficient-mini",
             "google/t5-efficient-small",
             "google/t5-efficient-base",
             "google/t5-efficient-large",
         ]:
-            encoder = self._get_huggingface_transformer(config)
+            return self._get_huggingface_transformer(config)
+    
         elif config.encoder == "patchtst":
             from encoders.tst_encoder import TSTEncoder
-            encoder = TSTEncoder(config)
+            return TSTEncoder(config)
+    
         else:
             raise ValueError(f"encoder '{config.encoder}' not recognised.")
-
-        return encoder

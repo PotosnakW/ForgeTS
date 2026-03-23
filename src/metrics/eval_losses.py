@@ -84,6 +84,35 @@ def quantile_loss(
         return (loss * mask).sum() / max(mask.sum(), 1)
     return loss.mean()
 
+def quantile_loss(
+    preds, 
+    targets, 
+    quantiles, 
+    mask=None,
+    aggregate='mean',
+) -> float:
+    """
+    quantile_loss() returns the *mean pinball loss* across quantiles:
+    QL = (1 / Q) * Σ_q L_q(y, ŷ_q)
+
+    where L_q is the pinball loss:
+
+        L_q(y, ŷ) = (y - ŷ) * q         if y >= ŷ
+                  = (ŷ - y) * (1 - q)    if y <  ŷ
+    """
+    errors = targets[..., np.newaxis] - preds
+    q      = np.array(quantiles, dtype=preds.dtype)
+    loss   = np.maximum(q * errors, (q - 1) * errors)
+
+    if mask is not None:
+        mask = np.broadcast_to(mask[..., np.newaxis], loss.shape)
+        loss = loss * mask
+    
+    if aggregate == 'mean':
+        return loss.sum() / max(mask.sum(), 1) if mask is not None else loss.mean()
+    
+    return loss  # aggregate=None, return per-element
+
 
 def coverage(
     preds:     np.ndarray,             # [B, T, H, C, Q]

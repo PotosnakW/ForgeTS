@@ -43,25 +43,62 @@ class Ensembler:
 
     def _reshape_windows_by_date(self, preds, mask=None):
         """
-        Rearranges overlapping forecast windows so that each row contains
-        all window predictions for the same target date.
-        """
+        Rearranges overlapping forecast windows from [B, T, H, C] into [B, T+H-1, H, C],
+        where each row along the second axis groups all predictions targeting the same date.
 
+        In a rolling forecast setup, multiple windows overlap on the same target date — e.g.
+        the 1-step-ahead prediction from window t and the 2-step-ahead from window t-1 both
+        target date t. This function collects those predictions into a single row, enabling
+        direct comparison of forecasts that share the same target.
+
+        The output has T+H-1 rows (one per unique target date) and H columns (one per
+        forecast horizon that could predict that date). Edge dates are partially observed:
+        the first and last H-1 rows will contain NaNs for windows that don't reach that date.
+
+        Parameters
+        ----------
+        preds : np.ndarray [B, T, H, C]
+        mask  : np.ndarray [B, T, H, C] or None
+            If provided, masked positions (mask == 0) are set to NaN before rearranging.
+        
+        Returns
+        -------
+        np.ndarray [B, T+H-1, H, C]
+        """
         B, T, H, C = preds.shape
+        
         if mask is not None:
             preds = np.where(mask == 0, np.nan, preds.copy())
+
+        # Flatten windows into a single timeline: [B, T*H, C]
         flatten_preds = preds.reshape(B, T * H, C)
-        idx          = np.arange(T * H).reshape(T, H)
+
+        # Build index grid [T, H] and flip each row
+        idx  = np.arange(T * H).reshape(T, H)
         flipped_idx  = np.fliplr(idx)
-        zs           = np.full((H - 1, H), np.nan)
-        padded_idx   = np.concatenate([zs, flipped_idx, zs])
-        idx_windows  = np.lib.stride_tricks.sliding_window_view(padded_idx, window_shape=(H, H))
-        date_idx     = np.diagonal(idx_windows[:, 0], axis1=1, axis2=2)
-        nan_mask     = ~np.isnan(date_idx)
-        idx2         = np.where(np.isnan(date_idx), 0, date_idx).astype(int)
+
+        # Pad with NaN rows above and below to handle edge dates that aren't
+        # covered by a full H windows — output will have T+H-1 rows
+        zs = np.full((H - 1, H), np.nan)
+        padded_idx = np.concatenate([zs, flipped_idx, zs])
+
+        # Slide an (H, H) window across padded_idx; each position captures the
+        # H overlapping forecast windows that share a target date
+        idx_windows = np.lib.stride_tricks.sliding_window_view(padded_idx, window_shape=(H, H))
+
+        # The diagonal of each window picks out exactly one prediction per horizon
+        # for that target date, giving shape [T+H-1, H]
+        date_idx = np.diagonal(idx_windows[:, 0], axis1=1, axis2=2)
+
+        # Track which positions are real vs NaN-padded edge dates
+        nan_mask = ~np.isnan(date_idx)
+        idx2 = np.where(np.isnan(date_idx), 0, date_idx).astype(int)
+
+        # Gather predictions using the flat timeline indices, then restore NaNs at edges
         indexed_preds = flatten_preds[:, idx2, :]
-        nan_mask_exp  = nan_mask[None, :, :, None]
-        return np.where(~nan_mask_exp, np.nan, indexed_preds)                    # (B, S, H, C*Q)
+        nan_mask_exp = nan_mask[None, :, :, None]
+        
+        return np.where(~nan_mask_exp, np.nan, indexed_preds)
 
     def ensembled_preds_reshape_for_windows(self, ensembled_preds):
         """unchanged — operates on (B, S, H, C*Q)"""

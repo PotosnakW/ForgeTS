@@ -3,28 +3,63 @@ from metrics.eval_losses import quantile_loss
 
 
 def _reshape_windows_by_date(preds, mask=None):
-        """
-        Rearranges overlapping forecast windows so that each row contains
-        all window predictions for the same target date.
-        """
-        B, T, H, C = preds.shape
-    
-        if mask is not None:
-            preds = np.where(mask == 0, np.nan, preds.copy())
+    """
+    Rearranges overlapping forecast windows from [B, T, H, C] into [B, T+H-1, H, C],
+    where each row along the second axis groups all predictions targeting the same date.
 
-        flatten_preds = preds.reshape(B, T * H, C)
-        idx  = np.arange(T * H).reshape(T, H)
-        flipped_idx  = np.fliplr(idx)
-        zs = np.full((H - 1, H), np.nan)
-        padded_idx = np.concatenate([zs, flipped_idx, zs])
-        idx_windows = np.lib.stride_tricks.sliding_window_view(padded_idx, window_shape=(H, H))
-        date_idx = np.diagonal(idx_windows[:, 0], axis1=1, axis2=2)
-        nan_mask = ~np.isnan(date_idx)
-        idx2 = np.where(np.isnan(date_idx), 0, date_idx).astype(int)
-        indexed_preds = flatten_preds[:, idx2, :]
-        nan_mask_exp = nan_mask[None, :, :, None]
+    In a rolling forecast setup, multiple windows overlap on the same target date — e.g.
+    the 1-step-ahead prediction from window t and the 2-step-ahead from window t-1 both
+    target date t. This function collects those predictions into a single row, enabling
+    direct comparison of forecasts that share the same target.
+
+    The output has T+H-1 rows (one per unique target date) and H columns (one per
+    forecast horizon that could predict that date). Edge dates are partially observed:
+    the first and last H-1 rows will contain NaNs for windows that don't reach that date.
+
+    Parameters
+    ----------
+    preds : np.ndarray [B, T, H, C]
+    mask  : np.ndarray [B, T, H, C] or None
+        If provided, masked positions (mask == 0) are set to NaN before rearranging.
     
-        return np.where(~nan_mask_exp, np.nan, indexed_preds)        
+    Returns
+    -------
+    np.ndarray [B, T+H-1, H, C]
+    """
+    B, T, H, C = preds.shape
+    
+    if mask is not None:
+        preds = np.where(mask == 0, np.nan, preds.copy())
+
+    # Flatten windows into a single timeline: [B, T*H, C]
+    flatten_preds = preds.reshape(B, T * H, C)
+
+    # Build index grid [T, H] and flip each row
+    idx  = np.arange(T * H).reshape(T, H)
+    flipped_idx  = np.fliplr(idx)
+
+    # Pad with NaN rows above and below to handle edge dates that aren't
+    # covered by a full H windows — output will have T+H-1 rows
+    zs = np.full((H - 1, H), np.nan)
+    padded_idx = np.concatenate([zs, flipped_idx, zs])
+
+    # Slide an (H, H) window across padded_idx; each position captures the
+    # H overlapping forecast windows that share a target date
+    idx_windows = np.lib.stride_tricks.sliding_window_view(padded_idx, window_shape=(H, H))
+
+    # The diagonal of each window picks out exactly one prediction per horizon
+    # for that target date, giving shape [T+H-1, H]
+    date_idx = np.diagonal(idx_windows[:, 0], axis1=1, axis2=2)
+
+    # Track which positions are real vs NaN-padded edge dates
+    nan_mask = ~np.isnan(date_idx)
+    idx2 = np.where(np.isnan(date_idx), 0, date_idx).astype(int)
+
+    # Gather predictions using the flat timeline indices, then restore NaNs at edges
+    indexed_preds = flatten_preds[:, idx2, :]
+    nan_mask_exp = nan_mask[None, :, :, None]
+    
+    return np.where(~nan_mask_exp, np.nan, indexed_preds)        
 
 
 def excess_volatility(y, preds, quantiles, scaling=True, mask=None):
@@ -70,59 +105,48 @@ def excess_volatility(y, preds, quantiles, scaling=True, mask=None):
     y_hat_before = reshaped_preds[:, :, :-1, :] # [B, T, H-1, C*Q]
     y_hat_update = reshaped_preds[:, :,  1:, :] # [B, T, H-1, C*Q]
     reshaped_y = reshaped_y[:, :, :-1, :] # [B, T, H-1, C]
-    
-    reshaped_mask_before = reshaped_mask[:, :, :-1, :] if mask is not None else None # [B, T, H-1, C] 
-    reshaped_mask_update = reshaped_mask[:, :, 1:, :] if mask is not None else None # [B, T, H-1, C] 
 
-    # check if changing to zeros here is good.. it might introduce inf values
     y_hat_before = np.nan_to_num(y_hat_before, nan=0.0).reshape(B, T+H-1, H-1, C, Q)  
     y_hat_update = np.nan_to_num(y_hat_update, nan=0.0).reshape(B, T+H-1, H-1, C, Q)  
     reshaped_y = np.nan_to_num(reshaped_y, nan=0.0)
-    reshaped_mask = np.nan_to_num(reshaped_mask, nan=0.0) if mask is not None else None
-    reshaped_mask_before = np.nan_to_num(reshaped_mask_before, nan=0.0) if mask is not None else None
-    reshaped_mask_update = np.nan_to_num(reshaped_mask_update, nan=0.0) if mask is not None else None
     pair_mask = (
         np.logical_and(
-                reshaped_mask[:, :, :-1, :], 
-                reshaped_mask[:, :, 1:, :]
-            ).astype(float)
+            np.nan_to_num(reshaped_mask[:, :, :-1, :], nan=0.0),
+            np.nan_to_num(reshaped_mask[:, :,  1:, :], nan=0.0)
+        ).astype(float)
         if mask is not None else None
     )
     
     mid = quantiles.index(0.5)
-    if len(quantiles)>1: 
-        y_hat_update_mid = y_hat_update[..., mid]
-    else:
-        y_hat_update_mid = y_hat_update.squeeze(-1)
+    y_hat_update_mid = y_hat_update[..., mid] if len(quantiles) > 1 else y_hat_update.squeeze(-1)
 
+    # aggregate=None: return per-element losses so EV is computed before any aggregation
     revision_cost = quantile_loss(
         preds=y_hat_before, 
         targets=y_hat_update_mid, 
         quantiles=quantiles, 
         mask=pair_mask,
+        aggregate=None,
     )
     accuracy_before = quantile_loss(
         preds=y_hat_before, 
         targets=reshaped_y, 
         quantiles=quantiles, 
         mask=pair_mask,
+        aggregate=None,
     )
     accuracy_update = quantile_loss(
         preds=y_hat_update, 
         targets=reshaped_y, 
         quantiles=quantiles, 
         mask=pair_mask,
+        aggregate=None,
     )
 
-    EV = revision_cost - (accuracy_before - accuracy_update)
+    EV = (revision_cost - (accuracy_before - accuracy_update)).sum()
+    denom = np.sum(np.abs(reshaped_y) * pair_mask) + 1e-8 if mask is not None else np.sum(np.abs(reshaped_y)) + 1e-8
 
-    if scaling:
-        denom = (np.sum(np.abs(reshaped_y) * reshaped_mask_before) + 1e-8
-             if reshaped_mask is not None
-             else np.sum(np.abs(reshaped_y)) + 1e-8)
-        EV /= denom
-
-    return EV
+    return EV / denom if scaling else EV
 
 
 def forecast_percentage_change(preds, scaling=True, mask=None):

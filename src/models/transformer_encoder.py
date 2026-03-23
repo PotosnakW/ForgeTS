@@ -184,8 +184,7 @@ class TransformerEncoder(BaseModel):
             forecast = forecast.permute(0, 2, 1, 3)                        # [B, C, T, H*c_out]
 
         B, C, T, _ = forecast.shape
-        forecast = forecast.reshape(B, C, T, self.h, -1)   # [B, C, T, H, c_out]
-        forecast = forecast.permute(0, 2, 3, 4, 1)         # [B, T, H, c_out, C]
-        forecast = forecast.reshape(B, T, self.h, -1)     # [B, T, H, c_out*C]
-
-        return forecast  # [B, T, H, c_out*C]
+        forecast = forecast.reshape(B, C, T, self.h, -1)  # [B, C, T, H, Q]
+        forecast = forecast.permute(0, 2, 3, 1, 4)        # [B, T, H, C, Q]
+    
+        return forecast                                    # [B, T, H, C, Q]

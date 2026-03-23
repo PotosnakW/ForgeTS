@@ -21,9 +21,10 @@
 | 7  | [Validation Strategies](#validation-strategies)   |
 | 8  | [Distributed Training](#distributed-training)     |
 | 9  | [Data Sharding](#data-sharding)                   |
-| 10 | [Inference & Predictions](#inference--predictions)|
-| 11 | [Forecast Ensembling](#forecast-ensembling)       |
-| 12 | [License](#license)                               |
+| 10 | [Inference](#inference--predictions)|
+| 11 | [Evaluation](#evaluation)                         |
+| 12 | [Forecast Ensembling](#forecast-ensembling)       |
+| 13 | [License](#license)                               |
 
 <br>
 
@@ -665,7 +666,7 @@ The factory automatically uses `ShardedTrainDataset`, `ShardedValDataset`, and `
 
 <br>
 
-## Inference & Predictions
+## Inference
 
 ```python
 results = eval_test(model, factory, device=torch.device("cuda"))
@@ -684,30 +685,172 @@ Returns a nested dict keyed by dataset name:
 }
 ```
 
+---
+
 <br>
 
-Use `outsample_mask` when computing metrics to exclude missing ground truth:
-
-```python
-preds   = results["simglucose"]["preds"]
-targets = results["simglucose"]["targets"]
-mask    = results["simglucose"]["outsample_mask"]
-
-mae = (torch.abs(preds - targets) * mask).sum() / mask.sum()
-```
-
+## Evaluation
+ 
+<br>
+ 
+ 
+If applicable, pass `outsample_mask` when computing metrics to excludes padded channels and missing ground truth from every aggregation.
+ 
 Per-channel access:
-
+ 
 ```python
 for i, uid in enumerate(results["simglucose"]["channel_ids"]):
     preds_i = results["simglucose"]["preds"][:, :, i]          # [n_fcds, H]
     mask_i  = results["simglucose"]["outsample_mask"][:, :, i]
 ```
-
+ 
 <br>
-
+ 
 ---
-
+ 
+<br>
+ 
+### Accuracy-Based Metrics
+ 
+```python
+from common.losses_np import mae, mse, rmse, mape, smape
+```
+ 
+| Function | Formula |
+|---|---|
+| `mae`   | `mean( \|y − ŷ\| )` |
+| `mse`   | `mean( (y − ŷ)² )` |
+| `rmse`  | `sqrt( mse )` |
+| `mape`  | `mean( \|y − ŷ\| / \|y\| ) × 100` |
+| `smape` | `mean( 2\|y − ŷ\| / (\|y\| + \|ŷ\|) ) × 100` |
+ 
+All functions share the same array contract:
+ 
+```python
+metric_fn(
+    preds:   np.ndarray,        # [..., H, C]
+    targets: np.ndarray,        # [..., H, C]
+    mask:    np.ndarray | None, # [..., H, C]  1=real, 0=missing
+) -> float
+```
+ 
+**Basic usage:**
+ 
+```python
+preds   = results["simglucose"]["preds"].numpy()           # [n_fcds, H, C]
+targets = results["simglucose"]["targets"].numpy()         # [n_fcds, H, C]
+mask    = results["simglucose"]["outsample_mask"].numpy()  # [n_fcds, H, C]
+ 
+print("MAE: ", mae(preds, targets, mask))
+print("RMSE:", rmse(preds, targets, mask))
+```
+ 
+> **Quantile models** — pass only the median slice to point-forecast metrics:
+> ```python
+> Q   = len(mcfg.quantiles)
+> mid = mcfg.quantiles.index(0.5)
+> # preds shape after reshaping: [n_fcds, H, C, Q]
+> p_median = preds.reshape(*preds.shape[:-1], -1, Q)[..., mid]
+> print("Median MAE:", mae(p_median, targets, mask))
+> ```
+ 
+<br>
+ 
+---
+ 
+<br>
+ 
+### Stability-Based Metrics
+ 
+Stability metrics operate on the overlapping structure of forking sequences — multiple forecast windows predict the same target date from different horizons, so revisions across consecutive windows can be measured directly.
+ 
+Both metrics call `_reshape_windows_by_date` internally, which rearranges predictions from `[B, T, H, C]` into `[B, T+H−1, H, C]` so that each row groups all forecasts targeting the same date.
+ 
+```python
+from common.losses_np import excess_volatility, forecast_percentage_change
+```
+ 
+<br>
+ 
+#### Excess Volatility (EV)
+ 
+Measures *harmful* forecast instability: revisions that incur a quantile-loss cost without a corresponding accuracy improvement.
+ 
+```
+EV = QL(ŷ_update_median, ŷ_before)        # revision cost
+   − (QL(y, ŷ_before) − QL(y, ŷ_update))  # accuracy improvement
+```
+ 
+For each overlapping window pair `(ŷ_before, ŷ_update)` sharing a target date, a positive EV contribution means the model revised its forecast in a way that was costly to the prior prediction but did not make it meaningfully more accurate. When `scaling=True` the result is normalised by `sum(|y|)`, making it comparable across series with different magnitudes.
+ 
+```python
+excess_volatility(
+    y:         np.ndarray,        # [B, T, H, C]      ground truth
+    preds:     np.ndarray,        # [B, T, H, C, Q]   quantile predictions
+    quantiles: list[float],       # e.g. [0.1, 0.5, 0.9] — must contain 0.5
+    scaling:   bool = True,       # normalise by sum(|y|)
+    mask:      np.ndarray | None, # [B, T, H, C]  1=real, 0=missing
+) -> float
+```
+ 
+```python
+preds   = results["simglucose"]["preds"].numpy()           # [n_fcds, H, C, Q]
+targets = results["simglucose"]["targets"].numpy()         # [n_fcds, H, C]
+mask    = results["simglucose"]["outsample_mask"].numpy()  # [n_fcds, H, C]
+ 
+ev = excess_volatility(
+    y=targets[None],                  # add batch dim → [1, n_fcds, H, C]
+    preds=preds[None],                # [1, n_fcds, H, C, Q]
+    quantiles=mcfg.quantiles,
+    mask=mask[None],
+)
+print("Excess Volatility:", ev)
+```
+ 
+> Lower is better. A value near zero means revisions are justified by accuracy gains; a large positive value flags unnecessary churn in the forecast.
+ 
+<br>
+ 
+#### Symmetric Forecast Percentage Change (sFPC)
+ 
+Measures the *relative magnitude* of revisions, without reference to ground truth. For each overlapping window pair:
+ 
+```
+sFPC = 200 × mean( |ŷ_update − ŷ_before| / (|ŷ_update| + |ŷ_before| + ε) )
+```
+ 
+When `scaling=False` the denominator is dropped and the result is a raw mean absolute revision scaled by 200.
+ 
+```python
+forecast_percentage_change(
+    preds:   np.ndarray,        # [B, T, H, C]
+    scaling: bool = True,       # if False, returns unscaled mean absolute revision
+    mask:    np.ndarray | None, # [B, T, H, C]  1=real, 0=missing
+) -> float
+```
+ 
+```python
+preds = results["simglucose"]["preds"].numpy()           # [n_fcds, H, C]
+mask  = results["simglucose"]["outsample_mask"].numpy()  # [n_fcds, H, C]
+ 
+# For quantile models pass the median slice
+Q   = len(mcfg.quantiles)
+mid = mcfg.quantiles.index(0.5)
+p_median = preds.reshape(*preds.shape[:-1], -1, Q)[..., mid]  # [n_fcds, H, C]
+ 
+sfpc = forecast_percentage_change(
+    preds=p_median[None],   # add batch dim → [1, n_fcds, H, C]
+    mask=mask[None],
+)
+print("sFPC:", sfpc)
+```
+ 
+> Lower is better. Unlike EV, sFPC does not require ground truth — it can be computed on live/future windows where actuals are unavailable.
+ 
+<br>
+ 
+---
+ 
 <br>
 
 ## Forecast Ensembling

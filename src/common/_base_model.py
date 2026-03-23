@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from ._utils import EarlyStopper
 from dataloaders._forking_sequences import fork_sequences
-from losses.torch_losses import get_loss
+from metrics.torch_losses import get_loss
 
 logger = logging.getLogger(__name__)
 

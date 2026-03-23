@@ -1,11 +1,11 @@
 from types import SimpleNamespace
-
-import torch
 from torch import nn
+import torch
 
 from common._base_model import BaseModel
 from common._modules import RevIN, Patching, PositionalEncoding, _make_causal_token_mask
 from encoders._base_encoder import BaseEncoder
+from decoders._base_decoder import BaseDecoder
 from output_layers._base_output_layer import BaseOutputLayer
 
 
@@ -14,9 +14,10 @@ class Model(nn.Module):
         super().__init__()
 
         self.hidden_size = config.hidden_size
-        self.patch_len   = config.patch_len
+        self.patch_len = config.patch_len
         self.stride = config.stride
         patch_num = int((config.context_length - config.patch_len) / config.stride + 1)
+        self.patch_num = patch_num
         config.nf = config.hidden_size * patch_num
 
         self.tokenizer = Patching(patch_len=config.patch_len, stride=config.stride)
@@ -29,10 +30,8 @@ class Model(nn.Module):
         self.dropout = nn.Dropout(config.dropout)
 
         self.encoder = BaseEncoder().get_encoder(config=config)
+        self.decoder = BaseDecoder().get_decoder(config=config)
         self.output_layer = BaseOutputLayer().get_output_layer(config=config)
-
-        patch_num_inp = int((config.context_length - config.patch_len) / config.stride + 1)
-        self.patch_num_inp = patch_num_inp
 
         if config.fcd_samples == 1:      # window sampling only
             self.fs_ws = self._ws_output
@@ -60,7 +59,7 @@ class Model(nn.Module):
         batch_size, n_channels, seq_len = x_enc.shape
 
         # dynamic n_patch from actual input (handles variable T for fcd_samples=-1)
-        n_patch = (seq_len - self.patch_len) // self.stride + 1
+        patch_num_inp = (seq_len - self.patch_len) // self.stride + 1
 
         # build attention mask: [B, C, n_patch]
         if available_mask is not None:
@@ -68,17 +67,17 @@ class Model(nn.Module):
             key_padding_mask = patch_avail.any(dim=-1).float() # [B, C, n_patch]
         else:
             key_padding_mask = torch.ones(
-                batch_size, n_channels, n_patch
+                batch_size, n_channels, patch_num_inp
             )
 
         attention_mask = _make_causal_token_mask(key_padding_mask=key_padding_mask, device=x_enc.device) # [B, C, 1, n_patch, n_patch]
-        attention_mask = attention_mask.reshape(batch_size * n_channels, 1, n_patch, n_patch) # [B * C, 1, n_patch, n_patch]
+        attention_mask = attention_mask.reshape(batch_size * n_channels, 1, patch_num_inp, patch_num_inp) # [B * C, 1, n_patch, n_patch]
 
         x_enc  = self.tokenizer(x=x_enc)          # [B, C, n_patch, patch_len]
         x_enc  = self.W_P(x_enc)                  # [B, C, n_patch, d_model]
         x_enc += self.W_pos(x_enc)                # [B, C, n_patch, d_model]
         x_enc  = x_enc.reshape(
-            batch_size * n_channels, n_patch, self.hidden_size
+            batch_size * n_channels, patch_num_inp, self.hidden_size
         )
         x_enc  = self.dropout(x_enc)
 
@@ -88,43 +87,46 @@ class Model(nn.Module):
             attention_mask = attention_mask,
         )
         enc_out = outputs.last_hidden_state  # [B*C, n_patch, d_model]
-        enc_out = enc_out.reshape(
-            batch_size, n_channels, n_patch, self.hidden_size
-        ) # [B, C, n_patch, d_model]
 
+        # standard: [B*C, 1, P, d_model]
+        # forking:  [B*C, T, P, d_model]]
         enc_out = self.fs_ws(enc_out)
-        # standard: [B, C, 1, H*c_out]
-        # forking:  [B, C, T, H*c_out]
-        output = self.output_layer(enc_out)            # [B, C, H*c_out]
+
+        dec_out = self.decoder(enc_out) # [B*C, T, P, d_model]
+        dec_out = dec_out.reshape(
+            batch_size, n_channels, -1, self.patch_num, self.hidden_size
+        ) # [B, C, T, P, d_model]
+        output = self.output_layer(dec_out)            # [B, C, H*c_out]
 
         return output
 
     def _ws_output(self, enc_out: torch.Tensor) -> torch.Tensor:
         """
-        enc_out : [B, C, P_std, d_model]
-        returns : [B, C, 1, P_std, d_model]   T=1 so forward is identical for both modes
+        enc_out : [B*C, P_std, d_model]
+        returns : [B*C, 1, P_std, d_model]   T=1 so forward is identical for both modes
         """
-        return enc_out.unsqueeze(2)                   # [B, C, 1, P_std, d_model]  T=1 unifies both modes
+        return enc_out.unsqueeze(1)                   # [B, C, 1, P_std, d_model]  T=1 unifies both modes
 
     def _fs_output(self, enc_out: torch.Tensor) -> torch.Tensor:
         """
-        enc_out : [B, C, P_std+T-1, d_model]   T inferred from enc_out shape
-        returns : [B, C, T, H*c_out]
+        enc_out : [B*C, P_std+T-1, d_model]   T inferred from enc_out shape
+        returns : [B*C, T, H*c_out]
 
         Slides a P_std-patch window over P_total encoder patches → T predictions.
         T is derived at runtime from enc_out so fcd_samples=-1 (variable T) works.
         step=1 patch is correct: fork_sequences already spaced raw blocks by
         stride timesteps, so consecutive patch windows are exactly 1 patch apart.
         """
+        _, patch_num_inp, _ = enc_out.shape
         enc_out = (
             enc_out
-            .unfold(dimension=2, size=self.patch_num_inp, step=1)   # [B, C, T, d, P]
-            .permute(0, 1, 2, 4, 3) # [B, C, T, P, d]
+            .unfold(dimension=1, size=self.patch_num, step=1)  # [B*C, T, d_model, patch_num_inp]
+            .permute(0, 1, 3, 2) # [B*C, T, patch_num_inp, d_model]
             .contiguous()
         )
         return enc_out
 
-class TransformerEncoder(BaseModel):
+class Transformer(BaseModel):
     def __init__(self, config):
         super().__init__()
 
@@ -134,7 +136,7 @@ class TransformerEncoder(BaseModel):
         assert (config.context_length - config.patch_len) % config.stride == 0, (
             f"(context_length - patch_len) % stride must be 0, got "
             f"({config.context_length} - {config.patch_len}) % {config.stride} = "
-            f"{(config.context_lengthe - config.patch_len) % config.stride}"
+            f"{(config.context_length - config.patch_len) % config.stride}"
         )
         config.patch_len = min(config.context_length, config.patch_len)
         config.c_out = config.loss.outputsize_multiplier

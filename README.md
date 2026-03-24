@@ -232,8 +232,10 @@ out = fork_sequences(batch, context_length=512, fcd_samples=-1, horizon=6)
 Called during training (`fcd_samples != -1`) to pick one `window_start` per series.
 
 ```
-`homogeneous` — same window_start for all series
-Any timestep is valid so long as L+H falls within the series length. Each series gets the same window_start index. Does not not account for left-padding and mid-series gaps. 
+`homogeneous`
+Each series gets the same window_start index.
+Any timestep is valid so long as L+H falls within the series length. 
+Index sampling **does not** account for left-padding and mid-series gaps. 
 ──────────────────────────────────────────────────────────
 series 1   [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
                         [──── L ────][── H ──]
@@ -246,8 +248,10 @@ series 3   [0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1]
                           ^ ^ ^ ^ L samples padding
 ──────────────────────────────────────────────────────────
 
-`heterogeneous` — independent window_start per series
-A timestep is only valid if **all channels** have real data there — this naturally skips left-padding and mid-series gaps. Sampling is via `torch.multinomial` so each series gets an independent draw.
+`heterogeneous`
+Each series gets a unique window_start index.
+A timestep is only valid so long as L+H falls within the series length and if **all channels** have real data there.
+Index sampling **does** account for left-padding and mid-series gaps. 
 ──────────────────────────────────────────────────────────
 series 1   [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
                [──── L ────][── H ──]
@@ -442,9 +446,9 @@ from common.losses_np import excess_volatility, forecast_percentage_change
 Measures harmful forecast instability: revisions that incur a quantile-loss cost without a corresponding accuracy improvement.
 
 <div style="display: flex; gap: 10px;">
-  <img src="figures/zero-penalty__improving_revision.png" alt="grid" width="300"/>
-  <img src="figures/maximum-penalty__degrading_revision.png" alt="second" width="300"/>
-  <img src="figures/overshoot-revision_penalty.png" alt="second" width="300"/>
+  <img src="figures/zero-penalty__improving_revision.png" alt="grid" width="280"/>
+  <img src="figures/maximum-penalty__degrading_revision.png" alt="second" width="280"/>
+  <img src="figures/overshoot-revision_penalty.png" alt="second" width="280"/>
 </div>
 Fig. Example penalty behavior of the Excess Volatility (EV) metric. EV distinguishes accuracy-improving
 revisions from accuracy-degrading ones, assigning no penalty when revisions improve accuracy, while asymmetrically penalizing both deteriorating and overshooting revisions according to their impact on accuracy.

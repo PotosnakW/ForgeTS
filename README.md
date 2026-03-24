@@ -1,6 +1,4 @@
-# TSFM &nbsp;·&nbsp; Time Series Foundation Model Pipeline
-
-> A PyTorch training pipeline for multivariate time series forecasting, built around **Forking Sequence (FCD) training** and designed to scale from a single GPU to distributed multi-node training.
+# Time Series Forecasting Pipeline
 
 <br>
 
@@ -13,18 +11,16 @@
 | | Section |
 |---|---|
 | 1  | [Quick Start](#quick-start)                       |
-| 2  | [Model Building](#model-building)                 |
+| 2  | [Moduler Model Build](#model-build)               |
 | 3  | [Dataloaders](#dataloaders)                       |
 | 4  | [Forking-Sequences](#forking-sequences)           |
 | 5  | [Training](#training)                             |
-| 6  | [Loss Functions](#loss-functions)                 |
-| 7  | [Validation Strategies](#validation-strategies)   |
-| 8  | [Distributed Training](#distributed-training)     |
-| 9  | [Data Sharding](#data-sharding)                   |
-| 10 | [Inference](#inference--predictions)|
-| 11 | [Evaluation](#evaluation)                         |
-| 12 | [Forecast Ensembling](#forecast-ensembling)       |
-| 13 | [License](#license)                               |
+| 6  | [Validation Strategies](#validation-strategies)   |
+| 7  | [Metrics](#metrics)                               |
+| 8  | [Inference](#inference--predictions)              |
+| 9  | [Evaluation](#evaluation)                         |
+| 10 | [Forecast Ensembling](#forecast-ensembling)       |
+| 11 | [License](#license)                               |
 
 <br>
 
@@ -34,53 +30,35 @@
 
 ## Quick Start
 
+### 1. Edit Model Config
+Add or edit a model config file in `config/models/`.
+
+### 2. Edit Dataset Config
+Add or edit dataset config files in `config/datasets/`.
+
+### 3. Train and Evaluate Model
+
 ```python
-import torch
-from dataloaders.ts_dataloader import DataLoaderFactory
-from common.train import train, eval_test
-from common._base_model import BaseModel
-from types import SimpleNamespace
-
-# 1. Configs
-mcfg = SimpleNamespace(
-    context_length=512, fcd_samples=4, batch_size=32,
-    max_steps=10000, val_check_interval=500,
-    loss="mse", mixing_strategy="concat",
-    val_strategy="stratified",
-    normalize=False, num_workers=4,
-    checkpoint_dir="checkpoints/", checkpoint_step=1000,
-    learning_rate=1e-3, gradient_clip_val=1.0,
-    early_stopping_patience=10, drop_last=False,
-    valid_batch_size=32,
-)
-
-dcfg = SimpleNamespace(
-    train=[SimpleNamespace(
-        path="data/simglucose.csv", name="simglucose",
-        horizon=6, val_size=2592, test_size=2592,
-        weight=1.0, hist_exog_cols=["CHO", "insulin"],
-        futr_exog_cols=[], stat_exog_cols=[],
-        per_series_split=False, sharded_dir=None,
-    )],
-)
-dcfg.validation = dcfg.train
-dcfg.test       = dcfg.train
-
-# 2. Data
-factory      = DataLoaderFactory(mcfg, dcfg)
+device = torch.device(cfg.device)
+cfg.model.h = cfg.dataset.train[0].horizon
+factory      = DataLoaderFactory(cfg.model, cfg.dataset)
 train_loader = factory.train_dataloader()
 val_loaders  = factory.val_dataloaders()
+model = Tranformer(cfg.model)
 
-# 3. Model
-model = MyModel(mcfg)
-
-# 4. Train
-metrics = train(model, mcfg, train_loader, val_loaders, device=torch.device("cuda"))
-
-# 5. Predict
-results = eval_test(model, factory, device=torch.device("cuda"))
+# ────── Train ──────
+train(
+    model        = model,
+    mcfg         = cfg.model,
+    train_loader = train_loader,
+    val_loaders  = val_loaders,
+    device       = device,
+    seed         = cfg.base.seed,
+    resume       = cfg.get("resume", None),
+)
+# ────── Test ──────
+eval_test(model, factory)
 ```
-
 
 <br>
 
@@ -89,9 +67,9 @@ results = eval_test(model, factory, device=torch.device("cuda"))
 <br>
 
 
-## Model Building
+## Moduler Model Build
 
-Select encoder, decoder, and output layer via the model config.
+When adding a model config file in `config/models/`, select encoder, decoder, and output layer.
 Any component can be set to `none` to skip it.
 ```yaml
 d_model: 256
@@ -113,7 +91,6 @@ output_layer: linear_proj  # or none
 | `none` | No encoder — input passed directly to decoder or output layer |
 
 ### Decoders
-TODO @wpotosna
 
 | `decoder` | Notes |
 |---|---|
@@ -123,7 +100,7 @@ TODO @wpotosna
 
 | `output_layer` | Notes |
 |---|---|
-| `linear_proj` | Projects to `[B, n_fcds, H, C]`; expands to `C × Q` for quantile models |
+| `linear_proj` | Projects last dimension to H × c_out, where c_out is the loss output dimension |
 | `none` | No projection — returns encoder/decoder output as-is |
 
 
@@ -136,7 +113,6 @@ TODO @wpotosna
 
 ## Dataloaders
 
-<br>
 
 ### Dataset Config
 
@@ -156,17 +132,6 @@ train:
 
 <br>
 
-**Splitting modes:**
-
-`per_series_split: False` — global time split (default):
-```
-[──────────── train ────────────][──── val ────][──── test ────]
-            T - val - test              val             test
-```
-
-`per_series_split: True` — each `unique_id` gets its own split boundary, for panel data where series have independent timelines.
-
-<br>
 
 ### DataLoaderFactory
 
@@ -175,19 +140,15 @@ Central object that owns all dataset construction and dataloader creation.
 ```python
 factory      = DataLoaderFactory(mcfg, dcfg)
 train_loader = factory.train_dataloader()
-val_loaders  = factory.val_dataloaders()   # {"val": DataLoader}
-test_loaders = factory.test_dataloaders()  # {"test": DataLoader}
+val_loaders  = factory.val_dataloaders()
+test_loaders = factory.test_dataloaders()
 ```
 
 <br>
 
 ### FullSeriesDataset
 
-Each dataset is a single item (`__len__ == 1`) — the entire series delivered to the model in one shot. `fork_sequences` handles all windowing inside `_prepare_batch`. This means:
-
-- No fixed window size baked into the dataset
-- `context_length` can be changed at inference time without reloading data
-- Heterogeneous series lengths are handled by left-padding at collation
+Each dataset is a single item (`__len__ == 1`) — the entire series delivered to the model in one shot. `fork_sequences` handles all windowing inside `_prepare_batch`.
 
 <br>
 
@@ -197,10 +158,9 @@ Groups datasets by horizon so all items in a batch share the same `H`. Required 
 
 | Strategy | Behaviour |
 |---|---|
-| `concat` | All datasets pooled together, sampled by weight |
-| `round_robin` | Horizons interleaved — one batch per horizon per round |
+| `concat` | Multiple datasets pooled into each batch, sampled by weight. Heterogeneous series lengths handled by left-padding at collation. |
+| `round_robin` | One dataset per batch, rotating across datasets each round. Weights control how many batches each dataset contributes before it is exhausted. |
 
-> Dataset `weight` controls relative sampling frequency. A dataset with `weight: 3.0` gets 3× more batches than one with `weight: 1.0`.
 
 <br>
 
@@ -230,34 +190,34 @@ out = fork_sequences(batch, context_length=512, fcd_samples=-1, horizon=6)
 
 <br>
 
-### Outputs
-
-| Key | Shape | Description |
-|---|---|---|
-| `insample_y` | `[B, enc_size, C, 1+Vh]` | Encoder input — context window + historical exogenous |
-| `outsample_y` | `[B, n_fcds, H, C]` | Forecast targets |
-| `outsample_mask` | `[B, n_fcds, H, C]` | `1` = real, `0` = missing / padded |
-| `available_mask` | `[B, C, enc_size]` | Encoder availability mask |
-
-`outsample_mask` is derived directly from `available_mask` — any timestep or channel missing in the encoder context is also masked in the targets, flowing into loss functions automatically.
-
-<br>
-
-### FCD Count
-
-In both training and eval modes the number of complete windows produced is:
-
-```
-n_fcds = floor((enc_block_len - L - H) / step) + 1
-```
-
-Incomplete trailing windows are always dropped — the last FCD horizon never extends beyond available data.
-
-<br>
-
 ### heterogeneous_sampler
 
 Called during training (`fcd_samples != -1`) to pick one `window_start` per series. A timestep is only valid if **all channels** have real data there — this naturally skips left-padding and mid-series gaps. Sampling is via `torch.multinomial` so each series gets an independent draw.
+
+```
+Homogeneous sampling — same window_start for all series
+──────────────────────────────────────────────────────────
+series 1   [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
+                        [──── L ────][── H ──]
+
+series 2   [0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
+                        [──── L ────][── H ──]
+
+series 3   [0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1]
+                        [──── L ────][── H ──]
+                          ^ ^ ^ ^ L samples padding
+
+Heterogeneous sampling — independent window_start per series
+──────────────────────────────────────────────────────────
+series 1   [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
+               [──── L ────][── H ──]
+
+series 2   [0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
+                         [──── L ────][── H ──]
+
+series 3   [0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1]
+                                  [──── L ────][── H ──]
+```
 
 <br>
 
@@ -267,87 +227,86 @@ Called during training (`fcd_samples != -1`) to pick one `window_start` per seri
 
 ## Training
 
-<br>
-
-### Model Config
-
-```yaml
-# ── Architecture ──────────────────────────────
-context_length: 512
-input_size: 512
-
-# ── Training loop ─────────────────────────────
-max_steps: 10000
-val_check_interval: 500
-early_stopping_patience: 10
-fcd_samples: 4             # 1 = single window, >1 = forking sequences
-
-# ── Loss ──────────────────────────────────────
-loss: "quantile"           # mse | mae | quantile
-quantiles: [0.1, 0.5, 0.9]
-
-# ── Optimiser ─────────────────────────────────
-learning_rate: 1e-3
-gradient_clip_val: 1.0
-
-# ── Batching ──────────────────────────────────
-batch_size: 32
-valid_batch_size: 32
-mixing_strategy: "concat"  # concat | round_robin
-drop_last: False
-
-# ── Validation ────────────────────────────────
-val_strategy: "exhaustive"       # exhaustive | random_datasets | stratified
-val_max_datasets: 4              # used by random_datasets only
-
-# ── Misc ──────────────────────────────────────
-normalize: False
-num_workers: 4
-checkpoint_dir: "checkpoints/"
-checkpoint_step: 1000
-```
-
-<br>
-
 ### Single GPU
-
 ```python
-from common.train import train, eval_test
+from common.train import train
 
-metrics = train(model, mcfg, train_loader, val_loaders, device=torch.device("cuda"))
-results = eval_test(model, factory, device=torch.device("cuda"))
+train(model, mcfg, train_loader, val_loaders, device=torch.device("cuda"))
+
+# Resume from checkpoint
+train(model, mcfg, train_loader, val_loaders, resume="checkpoints/final.pt")
 ```
 
-<br>
+### Multiple GPUs
 
-### Resuming from Checkpoint
-
-```python
-metrics = train(model, mcfg, train_loader, val_loaders, resume="checkpoints/final.pt")
+**torchrun** (recommended):
+```bash
+torchrun --nproc_per_node=4 train_script.py
 ```
 
-<br>
+**mp.spawn** (programmatic, single-machine):
+```python
+from common.train import train_distributed
 
-### BaseModel Subclassing
+train_distributed(model, mcfg, factory, use_spawn=True, world_size=4)
+```
 
-Only `forward` is required. `compute_loss`, `train_step`, `val_step`, and `predict_step` all have sensible defaults and can be overridden selectively.
+Sharded datasets are the recommended backend for distributed training — each rank loads a non-overlapping subset of shard files.
+
+| Phase | Behaviour |
+|---|---|
+| **Training** | Each rank receives a non-overlapping slice of every horizon group's pool. Padding ensures identical batch counts across ranks — required by DDP's barrier synchronisation. |
+| **Validation** | Every rank evaluates the full val set independently (same data, different model weights). Losses are all-reduced and averaged for the global metric. Only rank 0 logs and saves checkpoints. |
+| **Test** | Always single GPU. Call `eval_test()` after `dist.destroy_process_group()` has been called. |
+
+### Data Sharding
+
+For datasets too large to fit in RAM, `write_sharded_dataset` partitions data into time-blocked parquet files with configurable shard size.
+
+#### Writing Shards
 
 ```python
-class MyModel(BaseModel):
-    def __init__(self, config):
-        super().__init__()
-        self.encoder = TransformerEncoder(config)
-        self.decoder = MLPDecoder(config)
+from dataloaders.ts_sharding import write_sharded_dataset
 
-    def forward(self, batch):
-        # batch keys: insample_y, outsample_y, outsample_mask, available_mask
-        x = batch["insample_y"]               # [B, enc_size, C, 1+Vh]
-        return self.decoder(self.encoder(x))  # [B, n_fcds, H, C]
-
-model = MyModel(config)
-model.setup_training(mcfg, train_loader, val_loaders)
-model.fit()
+write_sharded_dataset(
+    df             = full_df,           # long-format DataFrame — must have 'available_mask'
+    out_dir        = "data/sharded/simglucose",
+    val_size       = 2592,              # matches dcfg entry val_size
+    test_size      = 2592,              # matches dcfg entry test_size
+    context_length = 512,               # L — baked into shard overlap
+    shard_size     = 5_000,             # train timesteps per file
+    hist_exog_cols = ["CHO", "insulin"],
+)
 ```
+
+#### Disk Layout
+
+```
+out_dir/
+    shard_000000.parquet   # t = [0,          shard_size + L)
+    shard_000001.parquet   # t = [shard_size,  2·shard_size + L)   ← L-row overlap
+    ...
+    val.parquet            # t = [train_end - L,  val_end)
+    test.parquet           # t = [val_end - L,    T_total)
+    static.parquet         # per-channel static features
+    metadata.json          # split boundaries, schema, shard index
+```
+
+The **L-row right-edge overlap** on each train shard means windows near shard boundaries are self-contained — no cross-file reads needed.
+
+#### Using Shards
+First write the shards with `write_sharded_dataset` (see [Data Sharding](#data-sharding)), 
+then point your dataset config entry at the output directory:
+```yaml
+- name: "simglucose"
+  sharded_dir: "data/sharded/simglucose"
+  horizon: 6
+  weight: 1.0
+```
+
+`path` is not required when `sharded_dir` is set. The factory uses `ShardedTrainDataset`, 
+`ShardedValDataset`, and `ShardedTestDataset` directly.
+
 
 <br>
 
@@ -355,22 +314,9 @@ model.fit()
 
 <br>
 
-## Loss Functions
+## Metrics
 
-> Adapted from [datasetsforecast](https://github.com/Nixtla/datasetsforecast/blob/main/datasetsforecast/losses.py)
-
-All losses share a common masked-reduction contract — padded channels and
-missing timesteps are excluded from both the numerator and denominator.
-`outsample_mask` from `fork_sequences` flows directly into every loss call
-without any additional preprocessing.
-
-<br>
-
----
-
-<br>
-
-### Training Losses (PyTorch)
+### Training Losses
 
 Select the loss via `mcfg.loss`:
 
@@ -399,132 +345,30 @@ When `mask is None` a plain `.mean()` is used — equivalent to a mask of all on
 
 <br>
 
-#### MAE
-
-Mean absolute error. Constant-magnitude gradients make it robust to large
-outliers but the non-differentiability at zero can slow convergence near
-the optimum.
-```
-L = mean( |y − ŷ| )
-```
-```yaml
-loss: "mae"
-```
-
-<br>
-
-#### MSE
-
-Mean squared error. Quadratic penalty makes large errors dominate the
-gradient signal — useful when big misses should be prioritised, but
-sensitive to outliers.
-```
-L = mean( (y − ŷ)² )
-```
-```yaml
-loss: "mse"
-```
-
-<br>
-
-#### Huber
-
-Quadratic (MSE-like) when the absolute error is below `delta`, linear
-(MAE-like) above it. Smooth at zero, robust in the tails.
-```
-         ½ (y − ŷ)²                   if |y − ŷ| < δ
-L_δ  =
-         δ · (|y − ŷ| − ½δ)           otherwise
-```
-
-`delta` controls the crossover point — set it to the typical scale of your
-residuals. Smaller values increase robustness; larger values approach MSE.
-```yaml
-loss: "huber"
-delta: 1.0      # default
-```
-
-<br>
-
-#### Quantile (Pinball)
-
-Trains the model to predict Q quantile levels simultaneously. The model
-output expands to `[B, H, C × Q]`; the loss function handles the reshape
-internally.
-```
-L_q = mean over q of  max( q·(y − ŷ_q),  (q−1)·(y − ŷ_q) )
-```
-
-The median quantile `q = 0.5` is equivalent to MAE up to a constant factor.
-Interval width is calibrated by the gap between symmetric quantile pairs
-(e.g. `0.1` / `0.9`).
-```yaml
-loss: "quantile"
-quantiles: [0.1, 0.5, 0.9]
-```
-```python
-# Quantile loss signature differs — preds carries C × Q channels
-quantile_loss(
-    preds:     torch.Tensor,   # [B, H, C × Q]
-    targets:   torch.Tensor,   # [B, H, C]
-    quantiles: list[float],
-    mask:      torch.Tensor | None,  # [B, H, C]
-) -> torch.Tensor
-```
-
-<br>
-
----
-
-<br>
-
-### Evaluation Losses (NumPy)
-
-Used in `eval_test` and any offline metric computation. Inputs are plain
-NumPy arrays; the mask is an optional boolean or `{0,1}` integer array with
-the same shape as `preds`.
+### Accuracy Metrics
 ```python
 from common.losses_np import mae, mse, rmse, mape, smape
 ```
 
 | Function | Formula |
 |---|---|
-| `mae` | `mean( \|y − ŷ\| )` |
-| `mse` | `mean( (y − ŷ)² )` |
-| `rmse` | `sqrt( mse )` |
-| `mape` | `mean( \|y − ŷ\| / \|y\| ) × 100` |
+| `mae`   | `mean( \|y − ŷ\| )` |
+| `mse`   | `mean( (y − ŷ)² )` |
+| `rmse`  | `sqrt( mse )` |
+| `mape`  | `mean( \|y − ŷ\| / \|y\| ) × 100` |
 | `smape` | `mean( 2\|y − ŷ\| / (\|y\| + \|ŷ\|) ) × 100` |
-
-All functions share the same array contract:
 ```python
 metric_fn(
-    preds:   np.ndarray,            # [..., H, C]
-    targets: np.ndarray,            # [..., H, C]
-    mask:    np.ndarray | None,     # [..., H, C]  1=real, 0=missing
+    preds:   np.ndarray,        # [..., H, C]
+    targets: np.ndarray,        # [..., H, C]
+    mask:    np.ndarray | None, # [..., H, C]  1=real, 0=missing
 ) -> float
 ```
-
-<br>
-
-**Typical usage with `eval_test` results:**
-```python
-from common.losses_np import mae, rmse
-
-results = eval_test(model, factory, device=torch.device("cuda"))
-
-preds   = results["simglucose"]["preds"].numpy()           # [n_fcds, H, C]
-targets = results["simglucose"]["targets"].numpy()         # [n_fcds, H, C]
-mask    = results["simglucose"]["outsample_mask"].numpy()  # [n_fcds, H, C]
-
-print("MAE: ", mae(preds, targets, mask))
-print("RMSE:", rmse(preds, targets, mask))
-```
-
-Example use cases:
 ```python
 preds   = results["simglucose"]["preds"].numpy()           # [n_fcds, H, C]
 targets = results["simglucose"]["targets"].numpy()         # [n_fcds, H, C]
 mask    = results["simglucose"]["outsample_mask"].numpy()  # [n_fcds, H, C]
+
 print("MAE: ", mae(preds, targets, mask))
 print("RMSE:", rmse(preds, targets, mask))
 ```
@@ -532,15 +376,59 @@ print("RMSE:", rmse(preds, targets, mask))
 > **Quantile models** — pass only the median slice to point-forecast metrics:
 > ```python
 > Q   = len(mcfg.quantiles)
-> mid = mcfg.quantiles.index(0.5)          # index of q=0.5
-> # preds shape is [n_fcds, H, C, Q] after reshaping
+> mid = mcfg.quantiles.index(0.5)
 > p_median = preds.reshape(*preds.shape[:-1], -1, Q)[..., mid]
 > print("Median MAE:", mae(p_median, targets, mask))
 > ```
 
 <br>
 
+### Stability Metrics
+
+Stability metrics operate on the overlapping structure of forking sequences — multiple forecast windows predict the same target date from different horizons, so revisions across consecutive windows can be measured directly.
+```python
+from common.losses_np import excess_volatility, forecast_percentage_change
+```
+
+#### Excess Volatility (EV)
+
+Measures harmful forecast instability: revisions that incur a quantile-loss cost without a corresponding accuracy improvement.
+```
+EV = QL(ŷ_update_median, ŷ_before)        # revision cost
+   − (QL(y, ŷ_before) − QL(y, ŷ_update))  # accuracy improvement
+```
+```python
+ev = excess_volatility(
+    y=targets[None],       # [1, n_fcds, H, C]
+    preds=preds[None],     # [1, n_fcds, H, C, Q]
+    quantiles=mcfg.quantiles,
+    mask=mask[None],
+)
+```
+
+> Lower is better. A value near zero means revisions are justified by accuracy gains; a large positive value flags unnecessary forecast churn.
+
+#### Symmetric Forecast Percentage Change (sFPC)
+
+Measures the relative magnitude of revisions without reference to ground truth — can be computed on live windows where actuals are unavailable.
+```
+sFPC = 200 × mean( |ŷ_update − ŷ_before| / (|ŷ_update| + |ŷ_before| + ε) )
+```
+```python
+sfpc = forecast_percentage_change(
+    preds=p_median[None],  # [1, n_fcds, H, C]
+    mask=mask[None],
+)
+```
+
+> Lower is better.
+
+
+<br>
+
 ---
+
+<br>
 
 ## Validation Strategies
 
@@ -554,50 +442,6 @@ Controlled by `mcfg.val_strategy`:
 
 > Test always uses `exhaustive` evaluation regardless of `val_strategy`.
 
-<br>
-
----
-
-<br>
-
-## Distributed Training
-
-Uses PyTorch DDP via `torchrun` or `mp.spawn`. Sharded datasets are the recommended backend — each rank loads a non-overlapping subset of shard files.
-
-<br>
-
-### Launch
-
-**torchrun** (recommended):
-```bash
-torchrun --nproc_per_node=4 train_script.py
-```
-
-**mp.spawn** (programmatic, single-machine):
-```python
-from common.train import train_distributed
-
-train_distributed(model, mcfg, factory, use_spawn=True, world_size=4)
-results = eval_test(model, factory)
-```
-
-<br>
-
-### Data Strategy
-
-| Phase | Behaviour |
-|---|---|
-| **Training** | Each rank receives a non-overlapping contiguous slice of every horizon group's pool. Padding ensures identical batch counts across ranks — required by DDP's barrier synchronisation. |
-| **Validation** | Every rank evaluates the full val set independently (same data, different model weights). Losses are all-reduced and averaged for the global metric. Only rank 0 logs and saves checkpoints. |
-| **Test** | Always single GPU, always after `dist.destroy_process_group()`. Call `eval_test()` outside of any distributed context. |
-
-<br>
-
-### Shard Assignment
-
-```python
-files[rank::world_size]  # strided for balanced time coverage across ranks
-```
 
 <br>
 
@@ -605,66 +449,6 @@ files[rank::world_size]  # strided for balanced time coverage across ranks
 
 <br>
 
-## Data Sharding
-
-For datasets too large to fit in RAM, `write_sharded_dataset` partitions data into time-blocked parquet files with configurable shard size.
-
-<br>
-
-### Writing Shards
-
-```python
-from dataloaders.ts_sharding import write_sharded_dataset
-
-write_sharded_dataset(
-    df             = full_df,           # long-format DataFrame — must have 'available_mask'
-    out_dir        = "data/sharded/simglucose",
-    val_size       = 2592,              # matches dcfg entry val_size
-    test_size      = 2592,              # matches dcfg entry test_size
-    context_length = 512,               # L — baked into shard overlap
-    shard_size     = 5_000,             # train timesteps per file
-    hist_exog_cols = ["CHO", "insulin"],
-)
-```
-
-<br>
-
-### Disk Layout
-
-```
-out_dir/
-    shard_000000.parquet   # t = [0,          shard_size + L)
-    shard_000001.parquet   # t = [shard_size,  2·shard_size + L)   ← L-row overlap
-    ...
-    val.parquet            # t = [train_end - L,  val_end)
-    test.parquet           # t = [val_end - L,    T_total)
-    static.parquet         # per-channel static features
-    metadata.json          # split boundaries, schema, shard index
-```
-
-The **L-row right-edge overlap** on each train shard means windows near shard boundaries are self-contained — no cross-file reads needed.
-
-<br>
-
-### Using Sharded Data
-
-Add `sharded_dir` to your dcfg entry:
-
-```python
-entry = make_entry(
-    path        = "data/simglucose.csv",
-    name        = "simglucose",
-    sharded_dir = "data/sharded/simglucose",
-)
-```
-
-The factory automatically uses `ShardedTrainDataset`, `ShardedValDataset`, and `ShardedTestDataset` when `sharded_dir` is present.
-
-<br>
-
----
-
-<br>
 
 ## Inference
 
@@ -685,173 +469,13 @@ Returns a nested dict keyed by dataset name:
 }
 ```
 
----
 
 <br>
-
-## Evaluation
- 
-<br>
- 
- 
-If applicable, pass `outsample_mask` when computing metrics to excludes padded channels and missing ground truth from every aggregation.
- 
-Per-channel access:
- 
-```python
-for i, uid in enumerate(results["simglucose"]["channel_ids"]):
-    preds_i = results["simglucose"]["preds"][:, :, i]          # [n_fcds, H]
-    mask_i  = results["simglucose"]["outsample_mask"][:, :, i]
-```
- 
-<br>
  
 ---
  
 <br>
  
-### Accuracy-Based Metrics
- 
-```python
-from common.losses_np import mae, mse, rmse, mape, smape
-```
- 
-| Function | Formula |
-|---|---|
-| `mae`   | `mean( \|y − ŷ\| )` |
-| `mse`   | `mean( (y − ŷ)² )` |
-| `rmse`  | `sqrt( mse )` |
-| `mape`  | `mean( \|y − ŷ\| / \|y\| ) × 100` |
-| `smape` | `mean( 2\|y − ŷ\| / (\|y\| + \|ŷ\|) ) × 100` |
- 
-All functions share the same array contract:
- 
-```python
-metric_fn(
-    preds:   np.ndarray,        # [..., H, C]
-    targets: np.ndarray,        # [..., H, C]
-    mask:    np.ndarray | None, # [..., H, C]  1=real, 0=missing
-) -> float
-```
- 
-**Basic usage:**
- 
-```python
-preds   = results["simglucose"]["preds"].numpy()           # [n_fcds, H, C]
-targets = results["simglucose"]["targets"].numpy()         # [n_fcds, H, C]
-mask    = results["simglucose"]["outsample_mask"].numpy()  # [n_fcds, H, C]
- 
-print("MAE: ", mae(preds, targets, mask))
-print("RMSE:", rmse(preds, targets, mask))
-```
- 
-> **Quantile models** — pass only the median slice to point-forecast metrics:
-> ```python
-> Q   = len(mcfg.quantiles)
-> mid = mcfg.quantiles.index(0.5)
-> # preds shape after reshaping: [n_fcds, H, C, Q]
-> p_median = preds.reshape(*preds.shape[:-1], -1, Q)[..., mid]
-> print("Median MAE:", mae(p_median, targets, mask))
-> ```
- 
-<br>
- 
----
- 
-<br>
- 
-### Stability-Based Metrics
- 
-Stability metrics operate on the overlapping structure of forking sequences — multiple forecast windows predict the same target date from different horizons, so revisions across consecutive windows can be measured directly.
- 
-Both metrics call `_reshape_windows_by_date` internally, which rearranges predictions from `[B, T, H, C]` into `[B, T+H−1, H, C]` so that each row groups all forecasts targeting the same date.
- 
-```python
-from common.losses_np import excess_volatility, forecast_percentage_change
-```
- 
-<br>
- 
-#### Excess Volatility (EV)
- 
-Measures *harmful* forecast instability: revisions that incur a quantile-loss cost without a corresponding accuracy improvement.
- 
-```
-EV = QL(ŷ_update_median, ŷ_before)        # revision cost
-   − (QL(y, ŷ_before) − QL(y, ŷ_update))  # accuracy improvement
-```
- 
-For each overlapping window pair `(ŷ_before, ŷ_update)` sharing a target date, a positive EV contribution means the model revised its forecast in a way that was costly to the prior prediction but did not make it meaningfully more accurate. When `scaling=True` the result is normalised by `sum(|y|)`, making it comparable across series with different magnitudes.
- 
-```python
-excess_volatility(
-    y:         np.ndarray,        # [B, T, H, C]      ground truth
-    preds:     np.ndarray,        # [B, T, H, C, Q]   quantile predictions
-    quantiles: list[float],       # e.g. [0.1, 0.5, 0.9] — must contain 0.5
-    scaling:   bool = True,       # normalise by sum(|y|)
-    mask:      np.ndarray | None, # [B, T, H, C]  1=real, 0=missing
-) -> float
-```
- 
-```python
-preds   = results["simglucose"]["preds"].numpy()           # [n_fcds, H, C, Q]
-targets = results["simglucose"]["targets"].numpy()         # [n_fcds, H, C]
-mask    = results["simglucose"]["outsample_mask"].numpy()  # [n_fcds, H, C]
- 
-ev = excess_volatility(
-    y=targets[None],                  # add batch dim → [1, n_fcds, H, C]
-    preds=preds[None],                # [1, n_fcds, H, C, Q]
-    quantiles=mcfg.quantiles,
-    mask=mask[None],
-)
-print("Excess Volatility:", ev)
-```
- 
-> Lower is better. A value near zero means revisions are justified by accuracy gains; a large positive value flags unnecessary churn in the forecast.
- 
-<br>
- 
-#### Symmetric Forecast Percentage Change (sFPC)
- 
-Measures the *relative magnitude* of revisions, without reference to ground truth. For each overlapping window pair:
- 
-```
-sFPC = 200 × mean( |ŷ_update − ŷ_before| / (|ŷ_update| + |ŷ_before| + ε) )
-```
- 
-When `scaling=False` the denominator is dropped and the result is a raw mean absolute revision scaled by 200.
- 
-```python
-forecast_percentage_change(
-    preds:   np.ndarray,        # [B, T, H, C]
-    scaling: bool = True,       # if False, returns unscaled mean absolute revision
-    mask:    np.ndarray | None, # [B, T, H, C]  1=real, 0=missing
-) -> float
-```
- 
-```python
-preds = results["simglucose"]["preds"].numpy()           # [n_fcds, H, C]
-mask  = results["simglucose"]["outsample_mask"].numpy()  # [n_fcds, H, C]
- 
-# For quantile models pass the median slice
-Q   = len(mcfg.quantiles)
-mid = mcfg.quantiles.index(0.5)
-p_median = preds.reshape(*preds.shape[:-1], -1, Q)[..., mid]  # [n_fcds, H, C]
- 
-sfpc = forecast_percentage_change(
-    preds=p_median[None],   # add batch dim → [1, n_fcds, H, C]
-    mask=mask[None],
-)
-print("sFPC:", sfpc)
-```
- 
-> Lower is better. Unlike EV, sFPC does not require ground truth — it can be computed on live/future windows where actuals are unavailable.
- 
-<br>
- 
----
- 
-<br>
 
 ## Forecast Ensembling
 

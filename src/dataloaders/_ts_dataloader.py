@@ -367,6 +367,110 @@ def _full_series_collate_fn(batch):
 
     return result
 
+# ─────────────────────────────────────────────────────────────────────────────
+# BatchSampler
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BatchSampler(Sampler):
+    """
+    Flat weighted sampler — no horizon bucketing.
+    Datasets are mixed into a single pool per multivariate flag.
+    Intended for fixed-horizon training (horizon_override) to ablate
+    against HorizonBatchSampler's horizon-grouped behaviour.
+
+    Distributed behaviour matches HorizonBatchSampler: contiguous slices
+    with front-padded pool to equalise batch counts across ranks.
+    """
+
+    def __init__(
+        self,
+        datasets,           # list of (dataset, weight, is_multivariate)
+        global_offsets,     # list of int, one per dataset
+        batch_size,
+        shuffle=True,
+        drop_last=False,
+        seed=0,
+        rank=0,
+        world_size=1,
+    ):
+        self.datasets       = datasets
+        self.global_offsets = global_offsets
+        self.batch_size     = batch_size
+        self.shuffle        = shuffle
+        self.drop_last      = drop_last
+        self.seed           = seed
+        self.rank           = rank
+        self.world_size     = world_size
+        self._epoch         = 0
+
+    def set_epoch(self, epoch: int):
+        self._epoch = epoch
+
+    def _build_pool(self, rng, multivariate: bool):
+        entries = [
+            (ds, w, offset)
+            for (ds, w, is_mv), offset in zip(self.datasets, self.global_offsets)
+            if is_mv == multivariate
+        ]
+        if not entries:
+            return []
+
+        total  = sum(len(ds) for ds, _, _ in entries)
+        w_arr  = np.array([w for _, w, _ in entries], dtype=np.float64)
+        w_arr /= w_arr.sum()
+
+        slots_per = (w_arr * total).round().astype(int)
+        slots_per[np.argmax(slots_per)] += total - slots_per.sum()
+
+        pool = []
+        for (ds, _, offset), slots in zip(entries, slots_per):
+            idxs = np.arange(len(ds)) + offset
+            if self.shuffle:
+                rng.shuffle(idxs)
+            it = itertools.cycle(idxs.tolist())
+            pool.extend(itertools.islice(it, int(slots)))
+
+        if self.shuffle:
+            rng.shuffle(pool)
+
+        if self.world_size > 1:
+            total_slots = self.batch_size * self.world_size
+            pad  = (-len(pool)) % total_slots
+            pool = pool + pool[:pad]
+            rank_size = len(pool) // self.world_size
+            pool = pool[self.rank * rank_size : (self.rank + 1) * rank_size]
+
+        if self.drop_last:
+            pool = pool[: (len(pool) // self.batch_size) * self.batch_size]
+
+        return pool
+
+    def __iter__(self):
+        rng = np.random.default_rng(self.seed + self._epoch)
+
+        all_batches = []
+        for is_mv in (False, True):
+            pool = self._build_pool(rng, multivariate=is_mv)
+            bs   = self.batch_size
+            batches = [pool[i : i + bs] for i in range(0, len(pool) - bs + 1, bs)]
+            if not self.drop_last and len(pool) % bs:
+                batches.append(pool[-(len(pool) % bs):])
+            all_batches.extend(batches)
+
+        if self.shuffle:
+            order       = rng.permutation(len(all_batches)).tolist()
+            all_batches = [all_batches[i] for i in order]
+
+        yield from all_batches
+
+    def __len__(self):
+        total = 0
+        for ds, _, _ in self.datasets:
+            n = len(ds)
+            if self.drop_last:
+                n = (n // self.batch_size) * self.batch_size
+            total += max(1, n // self.batch_size // max(1, self.world_size))
+        return total
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HorizonBatchSampler
@@ -619,39 +723,74 @@ class DataLoaderFactory:
             is_multivariate=is_multivariate,
         )
 
-    def _make_horizon_batch_sampler(self, rank=0, world_size=1):
-        all_datasets   = []
-        group_datasets = defaultdict(list)
-        group_weights  = defaultdict(list)
-        global_offsets = defaultdict(list)
-        flat_offset    = 0
+    def _make_train_batch_sampler(self, rank=0, world_size=1):
+        all_datasets = []
+        flat_offset  = 0
 
-        for group_key in sorted(self._horizon_groups.keys()):
-            for ds, weight, _ in self._horizon_groups[group_key]:
-                global_offsets[group_key].append(flat_offset)
-                group_datasets[group_key].append(ds)
-                group_weights[group_key].append(weight)
-                all_datasets.append(ds)
-                flat_offset += len(ds)
+        use_flat = getattr(self.mcfg, "batch_sampler", "HorizonBatchSampler") == "BatchSampler"
 
-        combined = ConcatDataset(all_datasets)
-        sampler  = HorizonBatchSampler(
-            group_datasets  = group_datasets,
-            group_weights   = group_weights,
-            global_offsets  = global_offsets,
-            batch_size      = self.mcfg.batch_size,
-            mixing_strategy = self.mcfg.mixing_strategy,
-            shuffle         = True,
-            drop_last       = self.mcfg.drop_last,
-            rank            = rank,
-            world_size      = world_size,
-        )
+        if use_flat:
+            if not getattr(self.mcfg, "horizon_override", None):
+                warnings.warn(
+                    "batch_sampler='flat' is set without horizon_override — "
+                    "batches may contain mixed horizons with no fixed output size."
+                )
+            datasets       = []
+            global_offsets = []
+
+            for group_key in sorted(self._horizon_groups.keys()):
+                _, is_multivariate = group_key
+                for ds, weight, _ in self._horizon_groups[group_key]:
+                    datasets.append((ds, weight, is_multivariate))
+                    global_offsets.append(flat_offset)
+                    all_datasets.append(ds)
+                    flat_offset += len(ds)
+
+            combined = ConcatDataset(all_datasets)
+            sampler  = BatchSampler(
+                datasets       = datasets,
+                global_offsets = global_offsets,
+                batch_size     = self.mcfg.batch_size,
+                shuffle        = True,
+                drop_last      = self.mcfg.drop_last,
+                seed           = getattr(self.mcfg, "seed", 0),
+                rank           = rank,
+                world_size     = world_size,
+            )
+
+        else:
+            group_datasets = defaultdict(list)
+            group_weights  = defaultdict(list)
+            global_offsets = defaultdict(list)
+
+            for group_key in sorted(self._horizon_groups.keys()):
+                for ds, weight, _ in self._horizon_groups[group_key]:
+                    global_offsets[group_key].append(flat_offset)
+                    group_datasets[group_key].append(ds)
+                    group_weights[group_key].append(weight)
+                    all_datasets.append(ds)
+                    flat_offset += len(ds)
+
+            combined = ConcatDataset(all_datasets)
+            sampler  = HorizonBatchSampler(
+                group_datasets  = group_datasets,
+                group_weights   = group_weights,
+                global_offsets  = global_offsets,
+                batch_size      = self.mcfg.batch_size,
+                mixing_strategy = self.mcfg.mixing_strategy,
+                shuffle         = True,
+                drop_last       = self.mcfg.drop_last,
+                seed            = getattr(self.mcfg, "seed", 0),
+                rank            = rank,
+                world_size      = world_size,
+            )
+
         return combined, sampler
 
     def train_dataloader(self, distributed=False, rank=0, world_size=1) -> DataLoader:
         if not self._horizon_groups:
             raise RuntimeError("No training datasets configured.")
-        combined, batch_sampler = self._make_horizon_batch_sampler(
+        combined, batch_sampler = self._make_train_batch_sampler(
             rank       = rank       if distributed else 0,
             world_size = world_size if distributed else 1,
         )

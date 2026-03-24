@@ -28,7 +28,9 @@ def make_mcfg(
         max_steps=10, 
         fcd_samples=4, 
         mixing_strategy="concat", 
-        checkpoint_dir=None
+        checkpoint_dir=None,
+        batch_sampler='HorizonBatchSampler',
+        horizon_override= None, 
     ):
 
     if model_name == 'linear':
@@ -56,6 +58,8 @@ def make_mcfg(
             loss                    = "mae",
             seed                    = 42,
             stat_exog_cols          = [],
+            batch_sampler           = batch_sampler,
+            horizon_override        = horizon_override,
         )
     elif model_name == 'mica':
         return SimpleNamespace(
@@ -111,6 +115,8 @@ def make_mcfg(
                 pre_norm               = False,
                 store_attn             = False,
                 loss                   = "mae",
+                batch_sampler           = batch_sampler,
+                horizon_override        = horizon_override,
             )
 
  

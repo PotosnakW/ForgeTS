@@ -11,16 +11,15 @@
 | | Section |
 |---|---|
 | 1  | [Quick Start](#quick-start)                       |
-| 2  | [Moduler Model Build](#model-build)               |
+| 2  | [Moduler Model Build](#moduler-model-build)       |
 | 3  | [Dataloaders](#dataloaders)                       |
 | 4  | [Forking-Sequences](#forking-sequences)           |
 | 5  | [Training](#training)                             |
 | 6  | [Validation Strategies](#validation-strategies)   |
 | 7  | [Metrics](#metrics)                               |
-| 8  | [Inference](#inference--predictions)              |
-| 9  | [Evaluation](#evaluation)                         |
-| 10 | [Forecast Ensembling](#forecast-ensembling)       |
-| 11 | [License](#license)                               |
+| 8  | [Inference](#inference)                           |
+| 9  | [Forecast Ensembling](#forecast-ensembling)       |
+| 10 | [License](#license)                               |
 
 <br>
 
@@ -31,12 +30,15 @@
 ## Quick Start
 
 ### 1. Edit Model Config
-Add or edit a model config file in `config/models/`.
+Add or edit a model config file in `configs/model/`.
 
 ### 2. Edit Dataset Config
-Add or edit dataset config files in `config/datasets/`.
+Add or edit dataset config files in `configs/dataset/`.
 
-### 3. Train and Evaluate Model
+### 3. Edit Base Config
+Edit default config file in `configs/base/`.
+
+### 4. Train and Evaluate Model
 
 ```python
 device = torch.device(cfg.device)
@@ -59,6 +61,10 @@ train(
 # ────── Test ──────
 eval_test(model, factory)
 ```
+
+<br>
+
+[↑ Back to top](#time-series-forecasting-pipeline)
 
 <br>
 
@@ -103,6 +109,9 @@ output_layer: linear_proj  # or none
 | `linear_proj` | Projects last dimension to H × c_out, where c_out is the loss output dimension |
 | `none` | No projection — returns encoder/decoder output as-is |
 
+<br>
+
+[↑ Back to top](#time-series-forecasting-pipeline)
 
 <br>
 
@@ -161,6 +170,9 @@ Groups datasets by horizon so all items in a batch share the same `H`. Required 
 | `concat` | Multiple datasets pooled into each batch, sampled by weight. Heterogeneous series lengths handled by left-padding at collation. |
 | `round_robin` | One dataset per batch, rotating across datasets each round. Weights control how many batches each dataset contributes before it is exhausted. |
 
+<br>
+
+[↑ Back to top](#time-series-forecasting-pipeline)
 
 <br>
 
@@ -218,6 +230,10 @@ series 2   [0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
 series 3   [0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1]
                                   [──── L ────][── H ──]
 ```
+
+<br>
+
+[↑ Back to top](#time-series-forecasting-pipeline)
 
 <br>
 
@@ -295,8 +311,7 @@ out_dir/
 The **L-row right-edge overlap** on each train shard means windows near shard boundaries are self-contained — no cross-file reads needed.
 
 #### Using Shards
-First write the shards with `write_sharded_dataset` (see [Data Sharding](#data-sharding)), 
-then point your dataset config entry at the output directory:
+First write the shards with `write_sharded_dataset`, then point your dataset config entry at the output directory:
 ```yaml
 - name: "simglucose"
   sharded_dir: "data/sharded/simglucose"
@@ -307,6 +322,9 @@ then point your dataset config entry at the output directory:
 `path` is not required when `sharded_dir` is set. The factory uses `ShardedTrainDataset`, 
 `ShardedValDataset`, and `ShardedTestDataset` directly.
 
+<br>
+
+[↑ Back to top](#time-series-forecasting-pipeline)
 
 <br>
 
@@ -391,8 +409,21 @@ from common.losses_np import excess_volatility, forecast_percentage_change
 ```
 
 #### Excess Volatility (EV)
-
 Measures harmful forecast instability: revisions that incur a quantile-loss cost without a corresponding accuracy improvement.
+
+<div style="display: flex; gap: 10px;">
+  <img src="figures/zero-penalty__improving_revision.png" alt="grid" width="350"/>
+  <img src="figures/maximum-penalty__degrading_revision.png" alt="second" width="350"/>
+  <img src="figures/overshoot-revision_penalty.png" alt="second" width="350"/>
+</div>
+
+Fig. Example penalty behavior of the Excess Volatility (EV) metric. EV distinguishes accuracy-improving
+revisions from accuracy-degrading ones, assigning no penalty when revisions improve accuracy, while asymmetrically
+penalizing both deteriorating and overshooting revisions according to their impact on accuracy.
+
+<br>
+
+
 ```
 EV = QL(ŷ_update_median, ŷ_before)        # revision cost
    − (QL(y, ŷ_before) − QL(y, ŷ_update))  # accuracy improvement
@@ -423,6 +454,9 @@ sfpc = forecast_percentage_change(
 
 > Lower is better.
 
+<br>
+
+[↑ Back to top](#time-series-forecasting-pipeline)
 
 <br>
 
@@ -442,6 +476,9 @@ Controlled by `mcfg.val_strategy`:
 
 > Test always uses `exhaustive` evaluation regardless of `val_strategy`.
 
+<br>
+
+[↑ Back to top](#time-series-forecasting-pipeline)
 
 <br>
 
@@ -469,6 +506,9 @@ Returns a nested dict keyed by dataset name:
 }
 ```
 
+<br>
+
+[↑ Back to top](#time-series-forecasting-pipeline)
 
 <br>
  
@@ -478,10 +518,20 @@ Returns a nested dict keyed by dataset name:
  
 
 ## Forecast Ensembling
-
-Because forking sequences produce multiple overlapping predictions for any
-given future timestep, ensembling these overlaps can meaningfully reduce
+Because forking sequences produce multiple overlapping predictions for anygiven future timestep, ensembling these overlaps can meaningfully reduce
 variance before computing final metrics.
+
+<div style="display: flex; gap: 10px;">
+  <img src="figures/available_forecast.png" alt="grid" width="400"/>
+  <img src="figures/forecast_variance.png" alt="second" width="400"/>
+</div>
+Fig. a) We adapt forking-sequences during inference to ensemble multiple forecasts of the same future date by
+computing a function (ex., moving average) across predictions generated from previous FCDs. b) Forking-sequences
+ensembling improves forecasts’ stability, reducing the estimators variance with a linear convergence rate analogous to
+the weak law of large numbers.
+
+<br>
+
 ```python
 from common.ensembling import Ensembler
 
@@ -524,6 +574,10 @@ print("Ensemble MAE:", mae(smoothed, targets, mask))
 
 <br>
 
+[↑ Back to top](#time-series-forecasting-pipeline)
+
+<br>
+
 ---
 
 <br>
@@ -541,3 +595,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 See [MIT LICENSE](https://github.com/mononitogoswami/labelerrors/blob/main/LICENSE) for details.
+
+<br>
+
+[↑ Back to top](#time-series-forecasting-pipeline)

@@ -1,4 +1,4 @@
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 import torch
 from torch import Tensor
 
@@ -79,72 +79,16 @@ def n_valid_fcds(T: int, context_length: int, horizon: int, step_size: int) -> i
     return (T - window_size) // step_size + 1
 
 
-def heterogeneous_sampler(
-    available_mask: Tensor,   # [B, S, C]
-    context_length: int,
-    fcd_samples:    int,
-    horizon:        int,
-    step_size:      int = 1,
-) -> Tuple[Tensor, int]:
-    """
-    Sample one window_start per series for a block of fcd_samples FCD windows.
-    Only called during training (fcd_samples != -1).
-    Val/test passes the full series directly to _unfold_windows.
-
-    Constraints on window_start[b]
-    --------------------------------
-    Valid positions are those where available_mask == 1 after collapsing
-    channels with min — a timestep is valid only if ALL channels have real
-    data there. This naturally skips both left-padding AND mid-series gaps.
-
-    Upper bound (scalar, same for all series):
-        window_start + block_len - 1 <= S - 1
-        block_len already includes horizon, so no further subtraction needed.
-        Rearranges to: window_start <= S - block_len  (= max_start)
-
-    The train dataset is extended by H-1 masked rows from the val set, so
-    windows whose horizons land in those rows are geometrically valid but
-    contribute zero loss (available_mask=0 → outsample_mask=0).
-
-    Sampling is via torch.multinomial, so each series gets an independent
-    start index drawn proportionally to its own availability weights.
-
-    T >= L+H is enforced by the dataset so at least one valid position
-    always exists per series.
-
-    Returns
-    -------
-    window_start : [B]   per-series start index sampled from [first_real[b], max_start]
-    block_len    : int   total length of the block from window_start
-    """
-    B, S, C = available_mask.shape
-
-    block_len = context_length + (fcd_samples - 1) * step_size + horizon
-    max_start = S - block_len  # block_len already contains horizon — no double subtraction
-
-    # Collapse [B, S, C] -> [B, S] via min:
-    # a timestep is only a valid start if ALL channels have real data there.
-    time_mask = available_mask.min(dim=2).values                          # [B, S]
-
-    # Zero out positions beyond max_start so the block never overflows the series.
-    sample_weights = time_mask.clone()
-    sample_weights[:, max_start + 1:] = 0.0
-
-    # Multinomial draw: each series gets its own start index sampled proportionally
-    # to available_mask — naturally skips left-padding AND mid-series missing values.
-    window_start = torch.multinomial(sample_weights, num_samples=1).squeeze(1)  # [B]
-    return window_start, block_len
-
-
-def fork_sequences(
-    batch:          Dict[str, Tensor],
-    context_length: int,
-    fcd_samples:    int,
-    horizon:        int,
-    step_size:      int = 1,
-) -> Dict[str, Tensor]:
+class ForkSequences:
     """
     Reformat a full-series batch into forking-sequence model inputs.
+
+    Parameters
+    ----------
+    context_length : int
+    horizon        : int
+    step_size      : int
+    fcd_sampler    : str    'heterogeneous' (default) | 'homogeneous'
 
     FCD count guarantee
     -------------------
@@ -152,22 +96,21 @@ def fork_sequences(
         n_fcds = floor((enc_block_len - L - H) / step) + 1
 
     These are always COMPLETE windows — the last FCD horizon never extends
-    beyond the series end (see _unfold_windows and heterogeneous_sampler).
+    beyond the series end (see _unfold_windows and the samplers).
 
     fcd_samples != -1  (training)
-        heterogeneous_sampler picks window_start such that the block fits
-        within [0, S-1]. The train series is extended by H-1 masked val rows,
-        so the last H-1 windows within train are now reachable. Predictions
-        landing in the masked extension rows have outsample_mask=0 and
-        contribute nothing to the loss.
-        _unfold_windows produces exactly fcd_samples complete windows.
+        Sampler picks window_start such that the block fits within [0, S-1].
+        The train series is extended by H-1 masked val rows, so the last H-1
+        windows within train are now reachable. Predictions landing in the
+        masked extension rows have outsample_mask=0 and contribute nothing
+        to the loss.
 
     fcd_samples == -1  (val / test)
         The full series is consumed (ctx_rows + eval rows + H-1 extension).
         _unfold_windows produces floor((S - L - H) / step) + 1 windows.
         ctx_rows and extension rows have available_mask=0, so predictions
-        landing there have outsample_mask=0 and are excluded from the loss.
-        Any incomplete trailing window is dropped — no overflow.
+        landing there are excluded from the loss. Any incomplete trailing
+        window is dropped — no overflow.
 
     Inputs  (left-padded, from collate)
     ------------------------------------
@@ -181,44 +124,144 @@ def fork_sequences(
     outsample_mask : [B, n_fcds,   H,  C]      0 where loss should be ignored
     available_mask : [B, enc_size, C]
     """
-    x_enc_full     = batch["x_enc"]
-    available_mask = batch["available_mask"]
-    hist_mask      = batch.get("hist_mask")
 
-    B, S, C, _ = x_enc_full.shape
-    assert available_mask.shape == (B, S, C), (
-        f"available_mask must be [B, S, C] = [{B}, {S}, {C}], "
-        f"got {tuple(available_mask.shape)}"
-    )
-    L, H = context_length, horizon
+    SAMPLERS = {"heterogeneous", "homogeneous"}
 
-    if fcd_samples != -1:
-        window_start, block_len = heterogeneous_sampler(
-            available_mask = available_mask,
-            context_length = L,
-            fcd_samples    = fcd_samples,
-            horizon        = H,
-            step_size      = step_size,
+    def __init__(
+        self,
+        context_length: int,
+        horizon:        int,
+        step_size:      int = 1,
+        fcd_sampler:    str = "heterogeneous",
+    ):
+        if fcd_sampler not in self.SAMPLERS:
+            raise ValueError(
+                f"fcd_sampler must be one of {self.SAMPLERS}, got '{fcd_sampler}'"
+            )
+        self.context_length = context_length
+        self.horizon        = horizon
+        self.step_size      = step_size
+        self.fcd_sampler    = fcd_sampler
+    
+    def _homogeneous_sampler(
+        self,
+        available_mask: Tensor,   # [B, S, C]
+        fcd_samples:    int,
+    ) -> Tuple[Tensor, int]:
+        """
+        Sample a single window_start shared across all series in the batch.
+
+        Returns
+        -------
+        window_start : [B]   same index broadcast to all series
+        block_len    : int   total span of one fcd_samples block
+        """
+        B, S, _ = available_mask.shape
+        L, H    = self.context_length, self.horizon
+
+        block_len = L + (fcd_samples - 1) * self.step_size + H
+        max_start = S - block_len
+        if max_start < 0:
+            raise ValueError(
+                f"Series length {S} is too short for block_len {block_len}. "
+                f"Reduce fcd_samples, context_length, or horizon."
+            )
+
+        window_start = torch.randint(0, max_start + 1, (1,))   # single draw
+        window_start = window_start.repeat(B)                   # [B]
+        return window_start, block_len
+
+    def _heterogeneous_sampler(
+        self,
+        available_mask: Tensor,   # [B, S, C]
+        fcd_samples:    int,
+    ) -> Tuple[Tensor, int]:
+        """
+        Sample one window_start per series, proportional to availability.
+
+        Constraints on window_start[b]
+        --------------------------------
+        Valid positions are those where available_mask == 1 after collapsing
+        channels with min — a timestep is valid only if ALL channels have real
+        data there. This naturally skips both left-padding AND mid-series gaps.
+
+        Upper bound (scalar, same for all series):
+            window_start + block_len - 1 <= S - 1
+            block_len already includes horizon, so no further subtraction needed.
+
+        The train dataset is extended by H-1 masked rows from the val set, so
+        windows whose horizons land in those rows are geometrically valid but
+        contribute zero loss (available_mask=0 → outsample_mask=0).
+
+        T >= L+H is enforced by the dataset so at least one valid position
+        always exists per series.
+
+        Returns
+        -------
+        window_start : [B]   per-series index sampled from [first_real[b], max_start]
+        block_len    : int   total span of one fcd_samples block
+        """
+        B, S, C = available_mask.shape
+        L, H    = self.context_length, self.horizon
+
+        block_len = L + (fcd_samples - 1) * self.step_size + H
+        max_start = S - block_len
+
+        # Collapse channels: a timestep is valid only if ALL channels are real.
+        time_mask      = available_mask.min(dim=2).values   # [B, S]
+        sample_weights = time_mask.clone()
+        sample_weights[:, max_start + 1:] = 0.0            # zero out overflow positions
+
+        window_start = torch.multinomial(
+            sample_weights, num_samples=1
+        ).squeeze(1)                                        # [B]
+        return window_start, block_len
+
+    def _sample(
+        self,
+        available_mask: Tensor,
+        fcd_samples:    int,
+    ) -> Tuple[Tensor, int]:
+        if self.fcd_sampler == "homogeneous":
+            return self._homogeneous_sampler(available_mask, fcd_samples)
+        return self._heterogeneous_sampler(available_mask, fcd_samples)
+
+    def __call__(
+        self,
+        batch:       Dict[str, Tensor],
+        fcd_samples: int,
+    ) -> Dict[str, Tensor]:
+        x_enc_full     = batch["x_enc"]
+        available_mask = batch["available_mask"]
+        hist_mask      = batch.get("hist_mask")
+
+        B, S, C, _ = x_enc_full.shape
+        assert available_mask.shape == (B, S, C), (
+            f"available_mask must be [B, S, C] = [{B}, {S}, {C}], "
+            f"got {tuple(available_mask.shape)}"
         )
-        enc_block  = _gather_block(x_enc_full,    window_start, block_len, S)
-        mask_block = _gather_mask(available_mask, window_start, block_len, S)
-    else:
-        # Full series: let _unfold_windows drop incomplete trailing windows.
-        enc_block  = x_enc_full
-        mask_block = available_mask
+        L, H = self.context_length, self.horizon
 
-    # [B, block_len, C, 1+Vh] -> [B, n_fcds, L+H, C, 1+Vh]
-    enc_windows  = _unfold_windows(enc_block,  size=L + H, step=step_size)
-    mask_windows = _unfold_windows(mask_block, size=L + H, step=step_size)
-    outsample_mask = mask_windows[:, :, L:, :]               # [B, n_fcds, H, C]
-    enc_size = enc_block.shape[1] - H                        # block_len - H
+        if fcd_samples != -1:
+            window_start, block_len = self._sample(available_mask, fcd_samples)
+            enc_block  = _gather_block(x_enc_full,    window_start, block_len, S)
+            mask_block = _gather_mask(available_mask, window_start, block_len, S)
+        else:
+            # Val / test: full series, let _unfold_windows drop incomplete windows.
+            enc_block  = x_enc_full
+            mask_block = available_mask
 
-    out = dict(
-        insample_y     = enc_block[:, :enc_size],             # [B, enc_size, C, 1+Vh]
-        outsample_y    = enc_windows[:, :, L:, :, 0],        # [B, n_fcds,   H,  C]
-        outsample_mask = outsample_mask,                      # [B, n_fcds,   H,  C]
-        available_mask = mask_block[:, :enc_size],            # [B, enc_size, C]
-    )
-    if hist_mask is not None:
-        out["hist_mask"] = hist_mask
-    return out
+        enc_windows    = _unfold_windows(enc_block,  size=L + H, step=self.step_size)
+        mask_windows   = _unfold_windows(mask_block, size=L + H, step=self.step_size)
+        outsample_mask = mask_windows[:, :, L:, :]       # [B, n_fcds, H, C]
+        enc_size       = enc_block.shape[1] - H          # block_len - H
+
+        out = dict(
+            insample_y     = enc_block[:, :enc_size],             # [B, enc_size, C, 1+Vh]
+            outsample_y    = enc_windows[:, :, L:, :, 0],        # [B, n_fcds,   H,  C]
+            outsample_mask = outsample_mask,                      # [B, n_fcds,   H,  C]
+            available_mask = mask_block[:, :enc_size],            # [B, enc_size, C]
+        )
+        if hist_mask is not None:
+            out["hist_mask"] = hist_mask
+        return out

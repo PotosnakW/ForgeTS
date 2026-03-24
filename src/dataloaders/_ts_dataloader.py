@@ -378,6 +378,7 @@ class BatchSampler(Sampler):
     Intended for fixed-horizon training (horizon_override) to ablate
     against HorizonBatchSampler's horizon-grouped behaviour.
 
+    Supports the same mixing strategies as HorizonBatchSampler.
     Distributed behaviour matches HorizonBatchSampler: contiguous slices
     with front-padded pool to equalise batch counts across ranks.
     """
@@ -387,21 +388,23 @@ class BatchSampler(Sampler):
         datasets,           # list of (dataset, weight, is_multivariate)
         global_offsets,     # list of int, one per dataset
         batch_size,
+        batch_mixing_strategy="concat",  # "concat" | "round_robin"
         shuffle=True,
         drop_last=False,
         seed=0,
         rank=0,
         world_size=1,
     ):
-        self.datasets       = datasets
-        self.global_offsets = global_offsets
-        self.batch_size     = batch_size
-        self.shuffle        = shuffle
-        self.drop_last      = drop_last
-        self.seed           = seed
-        self.rank           = rank
-        self.world_size     = world_size
-        self._epoch         = 0
+        self.datasets        = datasets
+        self.global_offsets  = global_offsets
+        self.batch_size      = batch_size
+        self.batch_mixing_strategy = batch_mixing_strategy
+        self.shuffle         = shuffle
+        self.drop_last       = drop_last
+        self.seed            = seed
+        self.rank            = rank
+        self.world_size      = world_size
+        self._epoch          = 0
 
     def set_epoch(self, epoch: int):
         self._epoch = epoch
@@ -445,23 +448,42 @@ class BatchSampler(Sampler):
 
         return pool
 
+    def _pool_to_batches(self, pool):
+        bs      = self.batch_size
+        batches = [pool[i : i + bs] for i in range(0, len(pool) - bs + 1, bs)]
+        if not self.drop_last and len(pool) % bs:
+            batches.append(pool[-(len(pool) % bs):])
+        return batches
+
     def __iter__(self):
         rng = np.random.default_rng(self.seed + self._epoch)
 
-        all_batches = []
+        # Build one batch list per multivariate flag
+        pool_batches = {}
         for is_mv in (False, True):
             pool = self._build_pool(rng, multivariate=is_mv)
-            bs   = self.batch_size
-            batches = [pool[i : i + bs] for i in range(0, len(pool) - bs + 1, bs)]
-            if not self.drop_last and len(pool) % bs:
-                batches.append(pool[-(len(pool) % bs):])
-            all_batches.extend(batches)
+            if pool:
+                pool_batches[is_mv] = self._pool_to_batches(pool)
 
-        if self.shuffle:
-            order       = rng.permutation(len(all_batches)).tolist()
-            all_batches = [all_batches[i] for i in order]
-
-        yield from all_batches
+        if self.batch_mixing_strategy == "round_robin":
+            iters  = {k: iter(v) for k, v in pool_batches.items()}
+            active = list(pool_batches.keys())
+            while active:
+                exhausted = []
+                for k in active:
+                    b = next(iters[k], None)
+                    if b is None:
+                        exhausted.append(k)
+                    else:
+                        yield b
+                for k in exhausted:
+                    active.remove(k)
+        else:  # concat
+            all_batches = [b for bl in pool_batches.values() for b in bl]
+            if self.shuffle:
+                order       = rng.permutation(len(all_batches)).tolist()
+                all_batches = [all_batches[i] for i in order]
+            yield from all_batches
 
     def __len__(self):
         total = 0
@@ -498,7 +520,7 @@ class HorizonBatchSampler(Sampler):
         group_weights,
         global_offsets,
         batch_size,
-        mixing_strategy="concat",
+        batch_mixing_strategy="concat",
         shuffle=True,
         drop_last=False,
         seed=0,
@@ -509,7 +531,7 @@ class HorizonBatchSampler(Sampler):
         self.group_weights   = group_weights
         self.global_offsets  = global_offsets
         self.batch_size      = batch_size
-        self.mixing_strategy = mixing_strategy
+        self.batch_mixing_strategy = batch_mixing_strategy
         self.shuffle         = shuffle
         self.drop_last       = drop_last
         self.seed            = seed
@@ -574,7 +596,7 @@ class HorizonBatchSampler(Sampler):
         rng               = np.random.default_rng(self.seed + self._epoch)
         group_batch_lists = {g: self._group_batches(g, rng) for g in self.groups}
 
-        if self.mixing_strategy == "round_robin":
+        if self.mixing_strbatch_mixing_strategyategy == "round_robin":
             iters  = {g: iter(b) for g, b in group_batch_lists.items()}
             active = list(self.groups)
             while active:
@@ -777,7 +799,7 @@ class DataLoaderFactory:
                 group_weights   = group_weights,
                 global_offsets  = global_offsets,
                 batch_size      = self.mcfg.batch_size,
-                mixing_strategy = self.mcfg.mixing_strategy,
+                batch_mixing_strategy = self.mcfg.batch_mixing_strategy,
                 shuffle         = True,
                 drop_last       = self.mcfg.drop_last,
                 seed            = getattr(self.mcfg, "seed", 0),
@@ -827,7 +849,7 @@ class DataLoaderFactory:
             group_weights   = {g: [1.0] * len(ds_list) for g, ds_list in group_datasets.items()},
             global_offsets  = global_offsets,
             batch_size      = self.mcfg.valid_batch_size,
-            mixing_strategy = self.mcfg.mixing_strategy,
+            batch_mixing_strategy = self.mcfg.batch_mixing_strategy,
             shuffle         = False,
             drop_last       = False,
             rank            = 0,

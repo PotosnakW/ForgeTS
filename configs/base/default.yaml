@@ -4,33 +4,13 @@ seed: 1
 # ── Encoder window ────────────────────────────────────────────
 input_size: 512
 
-# ── Batch mode ────────────────────────────────────────────────
-# dataset_specific : all channels (unique_ids) share the SAME time
-#                    window → [B, context_length, C, V]
-# mixed            : each (series, window) pair is independent
-#                    → [B, context_length, 1, V]
-batch_mode: "dataset_specific"
-
-# ── Multi-dataset mixing (train only) ─────────────────────────
-# Datasets are grouped by horizon. Within a group, multiple datasets
-# are pooled and sampled together (weighted by each entry's `weight`).
-#
-# concat      : batches drawn via WeightedRandomSampler within each
-#               horizon group; horizon groups interleaved proportionally
-#               to their total weight.
-#
-# round_robin : one batch per horizon group per cycle in strict rotation.
-#               Equal group representation regardless of dataset sizes.
-#
-# In both modes every batch is guaranteed to contain only samples
-# sharing the same horizon — no padding or masking required.
-mixing_strategy: "concat"   # "concat" | "round_robin"
-
 # ── DataLoader ──────────────────────────────────────────
 batch_size: 32
 valid_batch_size: 1024
 num_workers: 4
 drop_last: false
+batch_sampler: HorizonBatchSampler
+batch_mixing_strategy: 'concat'
 val_strategy: "exhaustive"   # full pass every val check (default)
 # val_strategy: "random_datasets"   # option A — K random datasets per val check
 # val_max_datasets: 4      # Only used for val_strategy "random_datasets"
@@ -42,6 +22,7 @@ max_steps: 10            # total optimiser steps (replaces max_epochs)
 val_check_interval: 5      # run validation every N steps
 early_stopping_patience: 10   # number of val checks without improvement before stopping
 fcd_samples: 1 # 1 for windows-sampling and >1 for forking-sequences
+fcd_sampler: heterogeneous
 loss: "quantile"
 quantiles: [0.1, 0.5, 0.9]
 optimizer_name: "AdamW"

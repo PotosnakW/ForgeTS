@@ -35,6 +35,38 @@ Add or edit a model config file in `configs/model/`.
 ### 2. Edit Dataset Config
 Add or edit dataset config files in `configs/dataset/`.
 
+### Dataset Config
+
+Dataset configs define paths, train/val/test splits, exogenous features, and per-dataset sampling weights. Multiple datasets can be listed as separate entries under `train`, `validation`, and `test`.
+
+```yaml
+train:
+  - path: "../datasets/simglucose_90_days.csv"
+    name: "simglucose"
+    horizon: 6
+    val_size: 2592        # timesteps reserved for validation
+    test_size: 2592       # timesteps reserved for test
+    weight: 1.0           # relative sampling weight during training
+    hist_exog_cols: [CHO, insulin]
+    per_series_split: False
+```
+
+<br>
+
+The `default.yaml` config specifies datasets for `train`, `validation`, and `test`.
+```yaml
+train:
+  - ${load:conf/dataset/simglucose.yaml}
+
+validation:
+  - ${load:conf/dataset/simglucose.yaml}
+
+test:
+  - ${load:conf/dataset/simglucose.yaml}
+```
+
+<br>
+
 ### 3. Edit Base Config
 Edit default config file in `configs/base/`.
 
@@ -123,25 +155,6 @@ output_layer: linear_proj  # or none
 ## Dataloaders
 
 
-### Dataset Config
-
-Dataset configs define paths, train/val/test splits, exogenous features, and per-dataset sampling weights. Multiple datasets can be listed as separate entries under `train`, `validation`, and `test`.
-
-```yaml
-train:
-  - path: "../datasets/simglucose_90_days.csv"
-    name: "simglucose"
-    horizon: 6
-    val_size: 2592        # timesteps reserved for validation
-    test_size: 2592       # timesteps reserved for test
-    weight: 1.0           # relative sampling weight during training
-    hist_exog_cols: [CHO, insulin]
-    per_series_split: False
-```
-
-<br>
-
-
 ### DataLoaderFactory
 
 Central object that owns all dataset construction and dataloader creation.
@@ -161,14 +174,24 @@ Each dataset is a single item (`__len__ == 1`) — the entire series delivered t
 
 <br>
 
-### HorizonBatchSampler
+### `batch_sampler: BatchSampler`
+Weighted sampler with no horizon bucketing. Datasets are mixed into a single pool and sampled by weight. Use this when horizon consistency across batches is not required. Requires that `horizon_override` is defined in the model config if training across datasets with different forecast horizons. Univariate and multivariate data are pooled and batched separately so they are never mixed within a batch. Ensure `multivariate` flag is specified in the `configs/dataset` files.
 
-Groups datasets by horizon so all items in a batch share the same `H`. Required for autoregressive rollouts — each batch must have a consistent forecast length.
-
-| Strategy | Behaviour |
+| `batch_mixing_strategy` | Behaviour |
 |---|---|
-| `concat` | Multiple datasets pooled into each batch, sampled by weight. Heterogeneous series lengths handled by left-padding at collation. |
-| `round_robin` | One dataset per batch, rotating across datasets each round. Weights control how many batches each dataset contributes before it is exhausted. |
+| `concat` | All datasets in the bucket are pooled into a single index space. Per-dataset weights control sampling frequency. Series of different lengths are reconciled at collation via left-padding, so the model always receives a rectangular tensor. |
+| `round_robin` | Datasets are served one-at-a-time, rotating each round. Weights control the number of batches a dataset contributes per round rather than per-sample probability. |
+
+<br>
+
+### `batch_sampler: HorizonBatchSampler`
+
+Groups datasets by horizon so all items in a batch share the same `H`. Required for autoregressive rollouts — each batch must have a consistent forecast length. Univariate and multivariate data are pooled and batched separately so they are never mixed within a batch. Ensure `multivariate` flag is specified in the `configs/dataset` files.
+
+| `batch_mixing_strategy` | Behaviour |
+|---|---|
+| `concat` | All datasets in the bucket are pooled into a single index space. Per-dataset weights control sampling frequency. Series of different lengths are reconciled at collation via left-padding, so the model always receives a rectangular tensor. |
+| `round_robin` | Datasets are served one-at-a-time, rotating each round. Weights control the number of batches a dataset contributes per round rather than per-sample probability. |
 
 <br>
 
@@ -191,10 +214,12 @@ FCD independently. A masking strategy depicted with hatching lines prevents temp
 
 
 ```python
-from dataloaders._forking_sequences import fork_sequences, n_valid_fcds
+from dataloaders._forking_sequences import fork_sequences
 
-# Training — sample fcd_samples windows per series
+# Training — sample FCDs per series
 out = fork_sequences(batch, context_length=512, fcd_samples=4, horizon=6)
+# Training — Use all FCDs per series
+out = fork_sequences(batch, context_length=512, fcd_samples=-1, horizon=6)
 
 # Val / Test — all valid windows, no sampling
 out = fork_sequences(batch, context_length=512, fcd_samples=-1, horizon=6)
@@ -202,12 +227,12 @@ out = fork_sequences(batch, context_length=512, fcd_samples=-1, horizon=6)
 
 <br>
 
-### heterogeneous_sampler
+### FCD Sampler
 
 Called during training (`fcd_samples != -1`) to pick one `window_start` per series. A timestep is only valid if **all channels** have real data there — this naturally skips left-padding and mid-series gaps. Sampling is via `torch.multinomial` so each series gets an independent draw.
 
 ```
-Homogeneous sampling — same window_start for all series
+`_homogeneous_sampler` — same window_start for all series
 ──────────────────────────────────────────────────────────
 series 1   [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
                         [──── L ────][── H ──]
@@ -219,7 +244,7 @@ series 3   [0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1]
                         [──── L ────][── H ──]
                           ^ ^ ^ ^ L samples padding
 
-Heterogeneous sampling — independent window_start per series
+`_heterogeneous_sampler` — independent window_start per series
 ──────────────────────────────────────────────────────────
 series 1   [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
                [──── L ────][── H ──]

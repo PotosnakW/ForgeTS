@@ -62,7 +62,7 @@ def _reshape_windows_by_date(preds, mask=None):
     return np.where(~nan_mask_exp, np.nan, indexed_preds)        
 
 
-def excess_volatility(y, preds, quantiles, scaling=True, mask=None):
+def excess_volatility(targets, preds, quantiles, scaling=True, mask=None):
     """
     Excess Volatility (EV) — measures harmful forecast instability by comparing
     the cost of a revision against the accuracy improvement it produced.
@@ -99,7 +99,7 @@ def excess_volatility(y, preds, quantiles, scaling=True, mask=None):
         preds.reshape(B, T, H, C*Q), 
         mask=np.repeat(mask, Q, axis=-1) if mask is not None else None
     )
-    reshaped_y = _reshape_windows_by_date(y)
+    reshaped_y = _reshape_windows_by_date(targets)
     reshaped_mask = _reshape_windows_by_date(mask) if mask is not None else None
 
     y_hat_before = reshaped_preds[:, :, :-1, :] # [B, T, H-1, C*Q]

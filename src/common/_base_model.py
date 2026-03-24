@@ -15,7 +15,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from ._utils import EarlyStopper
-from dataloaders._forking_sequences import ForkSequences
+from dataloaders._forking_sequences import ForkingSequences
 from metrics.torch_losses import get_loss
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ class BaseModel(nn.Module):
         self._training_ready = False
         self._rank = 0
         self._world_size = 1
-        self._fork_sequences = ForkSequences(
+        self._fork_sequences = ForkingSequences(
             context_length = config.context_length,
             step_size = 1,
             fcd_sampler = config.fcd_sampler,

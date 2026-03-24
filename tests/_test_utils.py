@@ -30,6 +30,7 @@ def make_mcfg(
         mixing_strategy="concat", 
         checkpoint_dir=None,
         batch_sampler='HorizonBatchSampler',
+        batch_mixing_strategy='concat',
         horizon_override= None, 
     ):
 
@@ -59,6 +60,7 @@ def make_mcfg(
             seed                    = 42,
             stat_exog_cols          = [],
             batch_sampler           = batch_sampler,
+            batch_mixing_strategy   = batch_mixing_strategy,
             horizon_override        = horizon_override,
         )
     elif model_name == 'mica':
@@ -115,8 +117,9 @@ def make_mcfg(
                 pre_norm               = False,
                 store_attn             = False,
                 loss                   = "mae",
-                batch_sampler           = batch_sampler,
-                horizon_override        = horizon_override,
+                batch_sampler          = batch_sampler,
+                batch_mixing_strategy  = batch_mixing_strategy,
+                horizon_override       = horizon_override,
             )
 
  

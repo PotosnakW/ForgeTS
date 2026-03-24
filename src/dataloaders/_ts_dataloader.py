@@ -596,7 +596,7 @@ class HorizonBatchSampler(Sampler):
         rng               = np.random.default_rng(self.seed + self._epoch)
         group_batch_lists = {g: self._group_batches(g, rng) for g in self.groups}
 
-        if self.mixing_strbatch_mixing_strategyategy == "round_robin":
+        if self.batch_mixing_strategy == "round_robin":
             iters  = {g: iter(b) for g, b in group_batch_lists.items()}
             active = list(self.groups)
             while active:

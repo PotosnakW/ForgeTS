@@ -79,7 +79,7 @@ def n_valid_fcds(T: int, context_length: int, horizon: int, step_size: int) -> i
     return (T - window_size) // step_size + 1
 
 
-class ForkSequences:
+class ForkingSequences:
     """
     Reformat a full-series batch into forking-sequence model inputs.
 

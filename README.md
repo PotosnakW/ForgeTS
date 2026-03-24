@@ -227,13 +227,13 @@ out = fork_sequences(batch, context_length=512, fcd_samples=-1, horizon=6)
 
 <br>
 
-### FCD Sampler
+### `fcd_sampler`
 
 Called during training (`fcd_samples != -1`) to pick one `window_start` per series.
 
 ```
-`_homogeneous_sampler` — same window_start for all series
- Any timestep is valid so long as L+H falls within the series length. Each series gets the same window_start index. Does not not account for left-padding and mid-series gaps. 
+`homogeneous` — same window_start for all series
+Any timestep is valid so long as L+H falls within the series length. Each series gets the same window_start index. Does not not account for left-padding and mid-series gaps. 
 ──────────────────────────────────────────────────────────
 series 1   [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
                         [──── L ────][── H ──]
@@ -244,9 +244,10 @@ series 2   [0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
 series 3   [0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1]
                         [──── L ────][── H ──]
                           ^ ^ ^ ^ L samples padding
+──────────────────────────────────────────────────────────
 
-`_heterogeneous_sampler` — independent window_start per series
- A timestep is only valid if **all channels** have real data there — this naturally skips left-padding and mid-series gaps. Sampling is via `torch.multinomial` so each series gets an independent draw.
+`heterogeneous` — independent window_start per series
+A timestep is only valid if **all channels** have real data there — this naturally skips left-padding and mid-series gaps. Sampling is via `torch.multinomial` so each series gets an independent draw.
 ──────────────────────────────────────────────────────────
 series 1   [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
                [──── L ────][── H ──]
@@ -256,6 +257,7 @@ series 2   [0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
 
 series 3   [0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1]
                                   [──── L ────][── H ──]
+──────────────────────────────────────────────────────────
 ```
 
 <br>
@@ -430,7 +432,8 @@ print("RMSE:", rmse(preds, targets, mask))
 
 ### Stability Metrics
 
-Stability metrics operate on the overlapping structure of forking sequences — multiple forecast windows predict the same target date from different horizons, so revisions across consecutive windows can be measured directly.
+Stability metrics operate on the overlapping structure of forking sequences — multiple forecast windows predict the same target date from different horizons, so revisions across consecutive windows can be measured directly. Lower measurements are preferred.
+
 ```python
 from common.losses_np import excess_volatility, forecast_percentage_change
 ```
@@ -439,47 +442,37 @@ from common.losses_np import excess_volatility, forecast_percentage_change
 Measures harmful forecast instability: revisions that incur a quantile-loss cost without a corresponding accuracy improvement.
 
 <div style="display: flex; gap: 10px;">
-  <img src="figures/zero-penalty__improving_revision.png" alt="grid" width="350"/>
-  <img src="figures/maximum-penalty__degrading_revision.png" alt="second" width="350"/>
-  <img src="figures/overshoot-revision_penalty.png" alt="second" width="350"/>
+  <img src="figures/zero-penalty__improving_revision.png" alt="grid" width="300"/>
+  <img src="figures/maximum-penalty__degrading_revision.png" alt="second" width="300"/>
+  <img src="figures/overshoot-revision_penalty.png" alt="second" width="300"/>
 </div>
-
 Fig. Example penalty behavior of the Excess Volatility (EV) metric. EV distinguishes accuracy-improving
-revisions from accuracy-degrading ones, assigning no penalty when revisions improve accuracy, while asymmetrically
-penalizing both deteriorating and overshooting revisions according to their impact on accuracy.
+revisions from accuracy-degrading ones, assigning no penalty when revisions improve accuracy, while asymmetrically penalizing both deteriorating and overshooting revisions according to their impact on accuracy.
 
 <br>
 
-
-```
-EV = QL(ŷ_update_median, ŷ_before)        # revision cost
-   − (QL(y, ŷ_before) − QL(y, ŷ_update))  # accuracy improvement
-```
 ```python
 ev = excess_volatility(
-    y=targets[None],       # [1, n_fcds, H, C]
-    preds=preds[None],     # [1, n_fcds, H, C, Q]
-    quantiles=mcfg.quantiles,
-    mask=mask[None],
+    targets=targets, # [B, T, H, C]
+    preds=preds, # [B, T, H, C, Q]
+    quantiles=mcfg.quantiles, # [Q]
+    mask=mask, # [B, C, H]
+    scaling=True,
 )
 ```
 
-> Lower is better. A value near zero means revisions are justified by accuracy gains; a large positive value flags unnecessary forecast churn.
 
 #### Symmetric Forecast Percentage Change (sFPC)
 
-Measures the relative magnitude of revisions without reference to ground truth — can be computed on live windows where actuals are unavailable.
-```
-sFPC = 200 × mean( |ŷ_update − ŷ_before| / (|ŷ_update| + |ŷ_before| + ε) )
-```
+Measures the relative magnitude of revisions without reference to ground truth. Can be computed on live windows where targets are unavailable.
+
 ```python
 sfpc = forecast_percentage_change(
-    preds=p_median[None],  # [1, n_fcds, H, C]
-    mask=mask[None],
+    preds=p_median, # [B, T, H, C, Q]
+    mask=mask, # [B, C, H]
+    scaling=True,
 )
 ```
-
-> Lower is better.
 
 <br>
 

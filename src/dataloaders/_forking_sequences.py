@@ -86,9 +86,11 @@ class ForkSequences:
     Parameters
     ----------
     context_length : int
-    horizon        : int
     step_size      : int
     fcd_sampler    : str    'heterogeneous' (default) | 'homogeneous'
+
+    Note: horizon is passed per-call since batches may have different horizons
+    (variable-horizon model). It is not stored in __init__.
 
     FCD count guarantee
     -------------------
@@ -130,7 +132,6 @@ class ForkSequences:
     def __init__(
         self,
         context_length: int,
-        horizon:        int,
         step_size:      int = 1,
         fcd_sampler:    str = "heterogeneous",
     ):
@@ -139,14 +140,22 @@ class ForkSequences:
                 f"fcd_sampler must be one of {self.SAMPLERS}, got '{fcd_sampler}'"
             )
         self.context_length = context_length
-        self.horizon        = horizon
         self.step_size      = step_size
-        self.fcd_sampler    = fcd_sampler
-    
+        self.fcd_sampler    = (
+            self._heterogeneous_sampler
+            if fcd_sampler == "heterogeneous"
+            else self._homogeneous_sampler
+        )
+
+    # ------------------------------------------------------------------ #
+    # Samplers                                                             #
+    # ------------------------------------------------------------------ #
+
     def _homogeneous_sampler(
         self,
-        available_mask: Tensor,   # [B, S, C]
+        available_mask: Tensor,
         fcd_samples:    int,
+        horizon:        int,
     ) -> Tuple[Tensor, int]:
         """
         Sample a single window_start shared across all series in the batch.
@@ -157,7 +166,7 @@ class ForkSequences:
         block_len    : int   total span of one fcd_samples block
         """
         B, S, _ = available_mask.shape
-        L, H    = self.context_length, self.horizon
+        L, H    = self.context_length, horizon
 
         block_len = L + (fcd_samples - 1) * self.step_size + H
         max_start = S - block_len
@@ -167,14 +176,15 @@ class ForkSequences:
                 f"Reduce fcd_samples, context_length, or horizon."
             )
 
-        window_start = torch.randint(0, max_start + 1, (1,))   # single draw
-        window_start = window_start.repeat(B)                   # [B]
+        window_start = torch.randint(0, max_start + 1, (1,))
+        window_start = window_start.repeat(B)               # [B]
         return window_start, block_len
 
     def _heterogeneous_sampler(
         self,
-        available_mask: Tensor,   # [B, S, C]
+        available_mask: Tensor,
         fcd_samples:    int,
+        horizon:        int,
     ) -> Tuple[Tensor, int]:
         """
         Sample one window_start per series, proportional to availability.
@@ -202,33 +212,28 @@ class ForkSequences:
         block_len    : int   total span of one fcd_samples block
         """
         B, S, C = available_mask.shape
-        L, H    = self.context_length, self.horizon
+        L, H    = self.context_length, horizon
 
         block_len = L + (fcd_samples - 1) * self.step_size + H
         max_start = S - block_len
 
-        # Collapse channels: a timestep is valid only if ALL channels are real.
         time_mask      = available_mask.min(dim=2).values   # [B, S]
         sample_weights = time_mask.clone()
-        sample_weights[:, max_start + 1:] = 0.0            # zero out overflow positions
+        sample_weights[:, max_start + 1:] = 0.0
 
         window_start = torch.multinomial(
             sample_weights, num_samples=1
         ).squeeze(1)                                        # [B]
         return window_start, block_len
 
-    def _sample(
-        self,
-        available_mask: Tensor,
-        fcd_samples:    int,
-    ) -> Tuple[Tensor, int]:
-        if self.fcd_sampler == "homogeneous":
-            return self._homogeneous_sampler(available_mask, fcd_samples)
-        return self._heterogeneous_sampler(available_mask, fcd_samples)
+    # ------------------------------------------------------------------ #
+    # Main call                                                            #
+    # ------------------------------------------------------------------ #
 
     def __call__(
         self,
         batch:       Dict[str, Tensor],
+        horizon:     int,
         fcd_samples: int,
     ) -> Dict[str, Tensor]:
         x_enc_full     = batch["x_enc"]
@@ -240,28 +245,28 @@ class ForkSequences:
             f"available_mask must be [B, S, C] = [{B}, {S}, {C}], "
             f"got {tuple(available_mask.shape)}"
         )
-        L, H = self.context_length, self.horizon
+        L, H = self.context_length, horizon
 
         if fcd_samples != -1:
-            window_start, block_len = self._sample(available_mask, fcd_samples)
+            window_start, block_len = self.fcd_sampler(available_mask, fcd_samples, H)
             enc_block  = _gather_block(x_enc_full,    window_start, block_len, S)
             mask_block = _gather_mask(available_mask, window_start, block_len, S)
         else:
-            # Val / test: full series, let _unfold_windows drop incomplete windows.
             enc_block  = x_enc_full
             mask_block = available_mask
 
         enc_windows    = _unfold_windows(enc_block,  size=L + H, step=self.step_size)
         mask_windows   = _unfold_windows(mask_block, size=L + H, step=self.step_size)
-        outsample_mask = mask_windows[:, :, L:, :]       # [B, n_fcds, H, C]
-        enc_size       = enc_block.shape[1] - H          # block_len - H
+        outsample_mask = mask_windows[:, :, L:, :]
+        enc_size       = enc_block.shape[1] - H
 
         out = dict(
-            insample_y     = enc_block[:, :enc_size],             # [B, enc_size, C, 1+Vh]
-            outsample_y    = enc_windows[:, :, L:, :, 0],        # [B, n_fcds,   H,  C]
-            outsample_mask = outsample_mask,                      # [B, n_fcds,   H,  C]
-            available_mask = mask_block[:, :enc_size],            # [B, enc_size, C]
+            insample_y     = enc_block[:, :enc_size],
+            outsample_y    = enc_windows[:, :, L:, :, 0],
+            outsample_mask = outsample_mask,
+            available_mask = mask_block[:, :enc_size],
         )
         if hist_mask is not None:
             out["hist_mask"] = hist_mask
         return out
+    

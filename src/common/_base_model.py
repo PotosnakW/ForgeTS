@@ -15,7 +15,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from ._utils import EarlyStopper
-from dataloaders._forking_sequences import fork_sequences
+from dataloaders._forking_sequences import ForkSequences
 from metrics.torch_losses import get_loss
 
 logger = logging.getLogger(__name__)
@@ -84,18 +84,23 @@ class BaseModel(nn.Module):
         Call super().__init__(). Build architecture only — no training args.
 
     forward(self, batch) -> Tensor
-        Implement the forward pass. batch is the output of fork_sequences
+        Implement the forward pass. batch is the output of forking-sequences
         (when batch_mode="full_series") or the raw collated batch otherwise.
 
     compute_loss(self, pred, batch) -> Tensor   [optional]
         Default: MSE against outsample_y. Override for custom losses.
     """
 
-    def __init__(self):
+    def __init__(self, config):
         super().__init__()
         self._training_ready = False
         self._rank = 0
         self._world_size = 1
+        self._fork_sequences = ForkSequences(
+            context_length = config.context_length,
+            step_size = 1,
+            fcd_sampler = config.fcd_sampler,
+        )
 
     @abstractmethod
     def forward(self, batch: Dict[str, Tensor]) -> Tensor:
@@ -178,7 +183,7 @@ class BaseModel(nn.Module):
 
     def _prepare_batch(self, raw_batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
         """
-        For full_series mode: runs fork_sequences to convert the raw padded
+        For full_series mode: runs forking-sequences to convert the raw padded
         series into model-ready windows.
 
         self.training controls fcd_samples:
@@ -191,11 +196,10 @@ class BaseModel(nn.Module):
         raw_batch = self._to_device(raw_batch)
         if self.mcfg.batch_mode == "full_series":
             fcd_samples = getattr(self.mcfg, "fcd_samples", 8) if self.training else -1
-            return fork_sequences(
-                batch          = raw_batch,
-                context_length = self.mcfg.context_length,
-                fcd_samples    = fcd_samples,
-                horizon        = int(raw_batch["horizon"][0].item()),
+            return _fork_sequences(
+                batch = raw_batch,
+                horizon = int(raw_batch["horizon"][0].item()),
+                fcd_samples = fcd_samples,
             )
         return raw_batch
 

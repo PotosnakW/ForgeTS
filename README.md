@@ -229,10 +229,11 @@ out = fork_sequences(batch, context_length=512, fcd_samples=-1, horizon=6)
 
 ### FCD Sampler
 
-Called during training (`fcd_samples != -1`) to pick one `window_start` per series. A timestep is only valid if **all channels** have real data there — this naturally skips left-padding and mid-series gaps. Sampling is via `torch.multinomial` so each series gets an independent draw.
+Called during training (`fcd_samples != -1`) to pick one `window_start` per series.
 
 ```
 `_homogeneous_sampler` — same window_start for all series
+ Any timestep is valid so long as L+H falls within the series length. Each series gets the same window_start index. Does not not account for left-padding and mid-series gaps. 
 ──────────────────────────────────────────────────────────
 series 1   [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
                         [──── L ────][── H ──]
@@ -245,6 +246,7 @@ series 3   [0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1]
                           ^ ^ ^ ^ L samples padding
 
 `_heterogeneous_sampler` — independent window_start per series
+ A timestep is only valid if **all channels** have real data there — this naturally skips left-padding and mid-series gaps. Sampling is via `torch.multinomial` so each series gets an independent draw.
 ──────────────────────────────────────────────────────────
 series 1   [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
                [──── L ────][── H ──]

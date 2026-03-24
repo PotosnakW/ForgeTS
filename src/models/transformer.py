@@ -128,7 +128,7 @@ class Model(nn.Module):
 
 class Transformer(BaseModel):
     def __init__(self, config):
-        super().__init__()
+        super().__init__(config)
 
         if isinstance(config, dict):
             config = SimpleNamespace(**config)

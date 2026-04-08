@@ -10,6 +10,9 @@ learn_pe: False
 patch_len: 8
 stride: 1
 hidden_size: 256
+n_layers: 4
+n_heads: 4
+linear_hidden_size: 1024
 dropout: 0.1
 multivariate_head: False
 head_dropout: False
@@ -27,9 +30,6 @@ norm: "BatchNorm"
 activation: 'gelu'
 pre_norm: False
 store_attn: False
-
-loss: quantlie_loss
-quantiles: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
 # MICA variants
 infini_mixer_type: none

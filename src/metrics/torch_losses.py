@@ -57,8 +57,8 @@ def _quantile_loss(
     mask:      torch.Tensor | None = None,  # [B, N, H, C]
 ) -> torch.Tensor:
     errors = targets.unsqueeze(-1) - preds                         # [B, N, H, C, Q]
-    q      = torch.tensor(quantiles, dtype=preds.dtype, device=preds.device)
-    loss   = torch.max(q * errors, (q - 1) * errors)              # [B, N, H, C, Q]
+    q = torch.tensor(quantiles, dtype=preds.dtype, device=preds.device)
+    loss = torch.max(q * errors, (q - 1) * errors)              # [B, N, H, C, Q]
 
     if mask is not None:
         mask = mask.unsqueeze(-1).expand_as(loss)

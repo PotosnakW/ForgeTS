@@ -32,11 +32,6 @@ class Model(nn.Module):
         self.encoder = BaseEncoder().get_encoder(config=config)
         self.decoder = BaseDecoder().get_decoder(config=config)
         self.output_layer = BaseOutputLayer().get_output_layer(config=config)
-
-        if config.fcd_samples == 1:      # window sampling only
-            self.fs_ws = self._ws_output
-        else:                             # >1 or -1 → forking
-            self.fs_ws = self._fs_output
     
     def forward(
         self,
@@ -90,7 +85,7 @@ class Model(nn.Module):
 
         # standard: [B*C, 1, P, d_model]
         # forking:  [B*C, T, P, d_model]]
-        enc_out = self.fs_ws(enc_out)
+        enc_out = self._fs_unfold(enc_out)
 
         dec_out = self.decoder(enc_out) # [B*C, T, P, d_model]
         dec_out = dec_out.reshape(
@@ -100,14 +95,7 @@ class Model(nn.Module):
 
         return output
 
-    def _ws_output(self, enc_out: torch.Tensor) -> torch.Tensor:
-        """
-        enc_out : [B*C, P_std, d_model]
-        returns : [B*C, 1, P_std, d_model]   T=1 so forward is identical for both modes
-        """
-        return enc_out.unsqueeze(1)                   # [B, C, 1, P_std, d_model]  T=1 unifies both modes
-
-    def _fs_output(self, enc_out: torch.Tensor) -> torch.Tensor:
+    def _fs_unfold(self, enc_out: torch.Tensor) -> torch.Tensor:
         """
         enc_out : [B*C, P_std+T-1, d_model]   T inferred from enc_out shape
         returns : [B*C, T, H*c_out]
@@ -139,10 +127,9 @@ class Transformer(BaseModel):
             f"{(config.context_length - config.patch_len) % config.stride}"
         )
         config.patch_len = min(config.context_length, config.patch_len)
-        config.c_out = config.loss.outputsize_multiplier
+        config.c_out = self.loss_fn.outputsize_multiplier
 
         self.fcd_samples = config.fcd_samples
-        self.h = config.h
 
         self.revin = config.revin
         if config.revin:
@@ -159,6 +146,8 @@ class Transformer(BaseModel):
     ) -> torch.Tensor:
 
         # TODO @wpotosna Extend MICA for covariates
+
+        horizon = getattr(self.mcfg, "horizon_override", None) or int(batch["horizon"][0].item())
 
         x = batch["insample_y"].clone() # [B, L+(T-1)*step_size, C, 1+Vh]
         input_mask = batch["available_mask"].clone()  # [B, L+(T-1)*step_size, C]
@@ -186,7 +175,7 @@ class Transformer(BaseModel):
             forecast = forecast.permute(0, 2, 1, 3)                        # [B, C, T, H*c_out]
 
         B, C, T, _ = forecast.shape
-        forecast = forecast.reshape(B, C, T, self.h, -1)  # [B, C, T, H, Q]
+        forecast = forecast.reshape(B, C, T, horizon, -1)  # [B, C, T, H, Q]
         forecast = forecast.permute(0, 2, 3, 1, 4)        # [B, T, H, C, Q]
     
         return forecast                                    # [B, T, H, C, Q]

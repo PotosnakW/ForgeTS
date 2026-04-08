@@ -17,11 +17,11 @@ class Linear_Multivariate_Layer(nn.Module):
             self.flattens = nn.ModuleList()
             for i in range(self.n_vars):
                 self.flattens.append(nn.Flatten(start_dim=-2))
-                self.linears.append(nn.Linear(config.nf, config.h * config.c_out))
+                self.linears.append(nn.Linear(config.nf, config.horizon * config.c_out))
                 self.dropouts.append(nn.Dropout(config.head_dropout))
         else:
             self.flatten = nn.Flatten(start_dim=-2)
-            self.linear = nn.Linear(config.nf, config.h * config.c_out)
+            self.linear = nn.Linear(config.nf, config.horizon * config.c_out)
             self.dropout = nn.Dropout(config.head_dropout)
 
     def forward(self, x):  # x: [bs x n_channels x hidden_size x patch_num]

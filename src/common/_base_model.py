@@ -84,8 +84,7 @@ class BaseModel(nn.Module):
         Call super().__init__(). Build architecture only — no training args.
 
     forward(self, batch) -> Tensor
-        Implement the forward pass. batch is the output of forking-sequences
-        (when batch_mode="full_series") or the raw collated batch otherwise.
+        Implement the forward pass. batch is the output of forking-sequences.
 
     compute_loss(self, pred, batch) -> Tensor   [optional]
         Default: MSE against outsample_y. Override for custom losses.
@@ -102,21 +101,27 @@ class BaseModel(nn.Module):
             fcd_sampler = config.fcd_sampler,
         )
 
+        loss_fn = get_loss(config.loss)
+        if hasattr(config, "quantiles") and config.quantiles:
+            loss_fn.quantiles = list(config.quantiles)
+            loss_fn.outputsize_multiplier = len(config.quantiles)
+        self.loss_fn = loss_fn
+
     @abstractmethod
     def forward(self, batch: Dict[str, Tensor]) -> Tensor:
         ...
 
-    def compute_loss(self, pred: Tensor, batch: Dict[str, Tensor]) -> Tensor:
+    def compute_loss(self, preds: Tensor, batch: Dict[str, Tensor]) -> Tensor:
         """
         pred           : [B, T, H, C]
         outsample_y    : [B, T, H, C]
         outsample_mask : [B, T, H, C]  1=real timestep+channel, 0=padded/missing
         """
-        y    = batch["outsample_y"]
+        y = batch["outsample_y"]
         B, T, H, C = y.shape
 
-        y    = y.reshape(B * T, H, C)
-        pred = pred.reshape(B * T, H, C)
+        y = y.reshape(B * T, H, C)
+        preds = preds.reshape(B * T, H, C, -1)
 
         outsample_mask = batch.get("outsample_mask")
         if outsample_mask is not None:
@@ -124,7 +129,11 @@ class BaseModel(nn.Module):
         else:
             mask = None
 
-        return self.loss_fn(pred, y, mask)
+        return self.loss_fn(
+            preds=preds, 
+            targets=y, 
+            mask=mask,
+        )
 
     def setup_training(
         self,
@@ -153,11 +162,9 @@ class BaseModel(nn.Module):
             self.parameters(), lr=mcfg.learning_rate, weight_decay=1e-2
         )
 
-        self.loss_fn = loss_fn or get_loss(mcfg.loss)
-
         self.early_stopper = EarlyStopper(
             patience = mcfg.early_stopping_patience,
-            mode     = mcfg.monitor_mode,
+            mode = "min",
         )
         self.ckpt_manager = CheckpointManager(
             checkpoint_dir  = mcfg.checkpoint_dir,
@@ -194,14 +201,12 @@ class BaseModel(nn.Module):
                   window is produced with no random sampling.
         """
         raw_batch = self._to_device(raw_batch)
-        if self.mcfg.batch_mode == "full_series":
-            fcd_samples = getattr(self.mcfg, "fcd_samples", 8) if self.training else -1
-            return _fork_sequences(
-                batch = raw_batch,
-                horizon = int(raw_batch["horizon"][0].item()),
-                fcd_samples = fcd_samples,
-            )
-        return raw_batch
+        fcd_samples = getattr(self.mcfg, "fcd_samples", 8) if self.training else -1
+        return self._fork_sequences(
+            batch = raw_batch,
+            horizon = int(raw_batch["horizon"][0].item()),
+            fcd_samples = fcd_samples,
+        )
 
     # ── core steps ───────────────────────────────────────────────────────────
 
@@ -212,8 +217,8 @@ class BaseModel(nn.Module):
 
         self.optimizer.zero_grad(set_to_none=True)
         fwd  = self.__dict__.get('_ddp_model', self)
-        pred = fwd(batch)
-        loss = self.compute_loss(pred, batch)
+        preds = fwd(batch)
+        loss = self.compute_loss(preds=preds, batch=batch)
         loss.backward()
         nn.utils.clip_grad_norm_(self.parameters(), self.mcfg.gradient_clip_val)
         self.optimizer.step()
@@ -227,7 +232,8 @@ class BaseModel(nn.Module):
         self._assert_training_ready()
         self.eval()
         batch = self._prepare_batch(raw_batch)
-        return self.compute_loss(self(batch), batch).item()
+        preds = self(batch)
+        return self.compute_loss(preds=preds, batch=batch).item()
 
     @torch.no_grad()
     def validate(self) -> Dict[str, Dict[str, float]]:
@@ -238,7 +244,7 @@ class BaseModel(nn.Module):
             total, n = 0.0, 0
             for raw_batch in loader:
                 total += self.val_step(raw_batch)
-                n     += 1
+                n += 1
             results[name] = {"loss": total / n if n > 0 else float("nan")}
         return results
 
@@ -337,15 +343,12 @@ class BaseModel(nn.Module):
             )
 
             if self.global_step % self.mcfg.val_check_interval == 0:
-                val_metrics   = self.validate()
+                val_metrics = self.validate()
                 final_metrics = val_metrics
                 self._log_val_metrics(val_metrics)
 
                 if primary and primary in val_metrics:
-                    monitor_val = val_metrics[primary].get(
-                        self.mcfg.monitor_metric,
-                        val_metrics[primary].get("loss", float("nan")),
-                    )
+                    monitor_val = val_metrics[primary].get("loss", float("nan"))
                     pbar.set_postfix({
                         "train": f"{train_loss:.4f}",
                         "val":   f"{monitor_val:.4f}",

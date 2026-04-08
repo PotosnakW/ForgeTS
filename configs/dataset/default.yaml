@@ -1,8 +1,9 @@
+horizon_override: null
 train:
-  - ${load:conf/dataset/simglucose.yaml}
+  - ${load:configs/dataset/sources/simglucose.yaml}
 
 validation:
-  - ${load:conf/dataset/simglucose.yaml}
+  - ${load:configs/dataset/sources/simglucose.yaml}
 
 test:
-  - ${load:conf/dataset/simglucose.yaml}
+  - ${load:configs/dataset/sources/simglucose.yaml}

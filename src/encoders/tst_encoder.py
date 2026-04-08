@@ -177,4 +177,3 @@ class TSTEncoderLayer(nn.Module):
             return inputs_embeds, scores
         else:
             return inputs_embeds
-    

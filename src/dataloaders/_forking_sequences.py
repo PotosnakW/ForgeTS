@@ -217,7 +217,14 @@ class ForkingSequences:
         block_len = L + (fcd_samples - 1) * self.step_size + H
         max_start = S - block_len
 
-        time_mask      = available_mask.min(dim=2).values   # [B, S]
+        if max_start < 0:
+            raise ValueError(
+                f"Series length {S} is too short for context_length={L} + "
+                f"fcd_samples={fcd_samples} * step_size={self.step_size} + horizon={H} "
+                f"= block_len={block_len}. Reduce context_length or fcd_samples."
+            )
+
+        time_mask = available_mask.min(dim=2).values   # [B, S]
         sample_weights = time_mask.clone()
         sample_weights[:, max_start + 1:] = 0.0
 

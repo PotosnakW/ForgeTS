@@ -1,0 +1,10 @@
+path: "/home/wpotosna/neuralforecast/mica/datasets/simglucose_90_days.csv"
+name: "simglucose"
+horizon: 6
+val_size: 2592
+test_size: 2592
+weight: 1.0
+hist_exog_cols: [] #[CHO, insulin]
+futr_exog_cols: []
+stat_exog_cols: []
+multivariate: false

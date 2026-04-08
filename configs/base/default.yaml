@@ -2,7 +2,7 @@
 seed: 1
 
 # ── Encoder window ────────────────────────────────────────────
-input_size: 512
+context_length: 512
 
 # ── DataLoader ──────────────────────────────────────────
 batch_size: 32
@@ -18,27 +18,16 @@ val_strategy: "exhaustive"   # full pass every val check (default)
 
 
 # ── Training ──────────────────────────────────────────────────
-max_steps: 10            # total optimiser steps (replaces max_epochs)
-val_check_interval: 5      # run validation every N steps
+max_steps: 500            # total optimiser steps (replaces max_epochs)
+val_check_interval: 20      # run validation every N steps
 early_stopping_patience: 10   # number of val checks without improvement before stopping
+learning_rate: 1e-4
 fcd_samples: 1 # 1 for windows-sampling and >1 for forking-sequences
 fcd_sampler: heterogeneous
 loss: "quantile"
 quantiles: [0.1, 0.5, 0.9]
+gradient_clip_val: 1.0
 optimizer_name: "AdamW"
-
-# weight_decay: 0.05
-# init_lr: 0.0001 #init_lr: 0.00005 # 1e-4 
-# min_lr: 0.00001 # 1e-5
-# lr_decay_rate: 0.9
-# warmup_lr: 0.00001 # 1e-5
-# warmup_steps: 1000
-# use_amp: True
-# max_opt_steps: 5000000
-# pct_start: 0.3
-# max_epoch: 50
-# lr_scheduler_type: 'linearwarmupcosinelr' # 'linearwarmupcosinelr' 'onecyclelr'
-
 
 # ── Checkpointing ─────────────────────────────────────────────
 checkpoint_dir: "checkpoints/"

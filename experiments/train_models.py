@@ -1,13 +1,14 @@
 import logging
+import os
 import torch
 import hydra
+from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 import yaml
 
-from ts_dataloader import DataLoaderFactory
-from _base_model import BaseModel
-from moment import MOMENT
-from .common.train import train, eval_test
+from models.transformer import Transformer
+from dataloaders._ts_dataloader import DataLoaderFactory
+from common.train import train, eval_test
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,46 +20,41 @@ logger = logging.getLogger(__name__)
 
 # ── Custom resolver: allows ${load:conf/dataset/simglucose.yaml} in split configs ──
 def _load_dataset_file(path: str) -> dict:
-    with open(path) as f:
-        return yaml.safe_load(f)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    full_path = os.path.join(project_root, path)
+    with open(full_path) as f:
+        return yaml.safe_load(f)  # plain dict, not OmegaConf.create()
 
 OmegaConf.register_new_resolver("load", _load_dataset_file)
 
 
-@hydra.main(config_path="conf", config_name="config", version_base=None)
+@hydra.main(config_path="../configs", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
+    # Merge base into model so model config has all training params too
+    mcfg = OmegaConf.merge(
+        OmegaConf.to_container(cfg.base,  resolve=True),
+        OmegaConf.to_container(cfg.model, resolve=True),
+    )
+    mcfg = OmegaConf.create(mcfg)
+    mcfg.horizon_override = getattr(cfg.dataset, "horizon_override", None)
+    mcfg.horizon = mcfg.horizon_override  # None = dynamic, int = fixed
+    dcfg = OmegaConf.create(OmegaConf.to_container(cfg.dataset, resolve=True))
 
-    # ── 0. Log full resolved config ──────────────────────────
-    logger.info("Config:\n%s", OmegaConf.to_yaml(cfg))
-
-    # ── 1. Device ────────────────────────────────────────────
-    device = torch.device(cfg.device)
-
-    # ── 2. Horizon (from first train dataset) ────────────────
-    cfg.model.h = cfg.dataset.train[0].horizon
-
-    # ── 3. Data ──────────────────────────────────────────────
-    factory      = DataLoaderFactory(cfg.model, cfg.dataset)
+    factory = DataLoaderFactory(mcfg, dcfg)
     train_loader = factory.train_dataloader()
-    val_loaders  = factory.val_dataloaders()
+    val_loaders = factory.val_dataloaders()
 
-    # ── 4. Model ─────────────────────────────────────────────
-    model    = MOMENT(cfg.model)
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info("MOMENT parameters: %s", f"{n_params:,}")
-
-    # ── 5. Train ─────────────────────────────────────────────
+    model = Transformer(mcfg)
+    
     train(
         model        = model,
-        mcfg         = cfg.model,
+        mcfg         = mcfg,
         train_loader = train_loader,
         val_loaders  = val_loaders,
-        device       = device,
+        device       = torch.device(cfg.device),
         seed         = cfg.base.seed,
         resume       = cfg.get("resume", None),
     )
-
-    # ── 6. Test ──────────────────────────────────────────────
     eval_test(model, factory)
 
 

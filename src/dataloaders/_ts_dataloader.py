@@ -15,15 +15,26 @@ from torch.utils.data import (
     Dataset,
     Sampler,
 )
+from omegaconf import OmegaConf, DictConfig
 
+def _to_cfg(entry):
+    if isinstance(entry, DictConfig):
+        return entry
+    return OmegaConf.create(entry)
 
 def _load_df(path: str) -> pd.DataFrame:
     p = Path(path)
     if p.suffix == ".parquet":
-        return pd.read_parquet(p)
-    if p.suffix == ".csv":
-        return pd.read_csv(p)
-    raise ValueError(f"Unsupported file format '{p.suffix}'. Use .parquet or .csv.")
+        df = pd.read_parquet(p)
+    elif p.suffix == ".csv":
+        df = pd.read_csv(p)
+    else:
+        raise ValueError(f"Unsupported file format '{p.suffix}'. Use .parquet or .csv.")
+
+    if "available_mask" not in df.columns:
+        df["available_mask"] = 1.0
+        
+    return df
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -34,7 +45,6 @@ def _split_df(
     df: pd.DataFrame,
     val_size: int,
     test_size: int,
-    per_series_split: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     df = df.copy()
     if not pd.api.types.is_datetime64_any_dtype(df["ds"]):
@@ -648,6 +658,7 @@ class DataLoaderFactory:
     def _build_train(self):
         from dataloaders.ts_sharding import ShardedTrainDataset
         for entry in self.dcfg.train:
+            entry = _to_cfg(entry)
             is_multivariate = getattr(entry, "multivariate", False)
             group_key = (entry.horizon, is_multivariate)
 
@@ -664,8 +675,7 @@ class DataLoaderFactory:
 
             df = _load_df(entry.path)
             train_df, val_df, _ = _split_df(
-                df, entry.val_size, entry.test_size,
-                per_series_split=entry.per_series_split,
+                df=df, val_size=entry.val_size, test_size=entry.test_size,
             )
             # Extend train with H-1 val rows (mask=0) so windows near the
             # train/val boundary can form. Predictions landing in these rows
@@ -690,6 +700,7 @@ class DataLoaderFactory:
         return self
 
     def _build_eval_dataset(self, entry, split: str) -> Dataset:
+        entry = _to_cfg(entry)
         is_multivariate = getattr(entry, "multivariate", False)
 
         if getattr(entry, "sharded_dir", None):
@@ -712,8 +723,7 @@ class DataLoaderFactory:
 
         df = _load_df(entry.path)
         train_df, val_df, test_df = _split_df(
-            df, entry.val_size, entry.test_size,
-            per_series_split=entry.per_series_split,
+            df=df, val_size=entry.val_size, test_size=entry.test_size,
         )
         eval_df = val_df if split == "val" else test_df
         if eval_df is None or len(eval_df) == 0:
@@ -727,9 +737,8 @@ class DataLoaderFactory:
         # Prepend context rows from train so the encoder has lookback at the
         # start of the eval window. ctx_rows get mask=0 — encoder sees them
         # but predictions landing here don't contribute to the loss.
-        if entry.use_context_head and train_df is not None and len(train_df) > 0:
+        if train_df is not None and len(train_df) > 0:
             ctx_rows = train_df.groupby("unique_id", sort=False).tail(_ctx(self.mcfg)).copy()
-            ctx_rows["available_mask"] = 0.0
             eval_df = (
                 pd.concat([ctx_rows, eval_df])
                 .sort_values(["unique_id", "ds"])
@@ -833,9 +842,10 @@ class DataLoaderFactory:
         flat_offset  = 0
 
         for entry in entries:
-            ds              = self._build_eval_dataset(entry, split)
+            entry = _to_cfg(entry)
+            ds = self._build_eval_dataset(entry, split)
             is_multivariate = getattr(entry, "multivariate", False)
-            group_key       = (entry.horizon, is_multivariate)
+            group_key = (entry.horizon, is_multivariate)
 
             global_offsets[group_key].append(flat_offset)
             group_datasets[group_key].append(ds)

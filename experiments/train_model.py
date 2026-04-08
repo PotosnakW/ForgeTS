@@ -18,6 +18,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+MODEL_TYPES = {
+    "transformer": Transformer,
+    # "rnn": RNN,
+    # "cnn": CNN,
+}
+
+def get_model(name: str):
+    if name not in MODEL_TYPES:
+        raise ValueError(f"Unknown model '{name}'. Available: {list(MODEL_TYPES.keys())}")
+    return MODEL_TYPES[name]
+
+
 # ── Custom resolver: allows ${load:conf/dataset/simglucose.yaml} in split configs ──
 def _load_dataset_file(path: str) -> dict:
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -44,7 +56,8 @@ def main(cfg: DictConfig) -> None:
     train_loader = factory.train_dataloader()
     val_loaders = factory.val_dataloaders()
 
-    model = Transformer(mcfg)
+    model_cls = get_model(mcfg.model_type)
+    model = model_cls(mcfg)
     
     train(
         model        = model,

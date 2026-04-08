@@ -29,69 +29,31 @@
 
 ## Quick Start
 
-### 1. Edit Model Config
-Add or edit a model config file in `configs/model/`.
-
-### 2. Edit Dataset Config
-Add or edit dataset config files in `configs/dataset/`.
-
-### Dataset Config
-
-Dataset configs define paths, train/val/test splits, exogenous features, and per-dataset sampling weights. Multiple datasets can be listed as separate entries under `train`, `validation`, and `test`.
-
-```yaml
-train:
-  - path: "../datasets/simglucose_90_days.csv"
-    name: "simglucose"
-    horizon: 6
-    val_size: 2592        # timesteps reserved for validation
-    test_size: 2592       # timesteps reserved for test
-    weight: 1.0           # relative sampling weight during training
-    hist_exog_cols: [CHO, insulin]
-    per_series_split: False
+### 1. Install
+```bash
+git clone <repo>
+cd tsfm_base
+pip install -e .
 ```
 
-<br>
-
-The `default.yaml` config specifies datasets for `train`, `validation`, and `test`.
-```yaml
-train:
-  - ${load:conf/dataset/simglucose.yaml}
-
-validation:
-  - ${load:conf/dataset/simglucose.yaml}
-
-test:
-  - ${load:conf/dataset/simglucose.yaml}
+### 2. Edit Configs
+```
+configs/
+  base/
+    default.yaml        # shared training params (batch_size, lr, max_steps, etc.)
+  dataset/
+    simglucose.yaml     # experiment config (train/val/test splits, horizon_override)
+    sources/
+      simglucose.yaml   # dataset config (path, horizon, val_size, exog_cols, etc.)
+  model/
+    tstmomentmica.yaml  # model architecture config
+  config.yaml           # top-level defaults
 ```
 
-<br>
-
-### 3. Edit Base Config
-Edit default config file in `configs/base/`.
-
-### 4. Train and Evaluate Model
-
-```python
-device = torch.device(cfg.device)
-cfg.model.h = cfg.dataset.train[0].horizon
-factory      = DataLoaderFactory(cfg.model, cfg.dataset)
-train_loader = factory.train_dataloader()
-val_loaders  = factory.val_dataloaders()
-model = Tranformer(cfg.model)
-
-# ────── Train ──────
-train(
-    model        = model,
-    mcfg         = cfg.model,
-    train_loader = train_loader,
-    val_loaders  = val_loaders,
-    device       = device,
-    seed         = cfg.base.seed,
-    resume       = cfg.get("resume", None),
-)
-# ────── Test ──────
-eval_test(model, factory)
+### 3. Run Experiment
+```bash
+cd experiments
+python train_models.py dataset=simglucose model=tstmomentmica
 ```
 
 <br>
@@ -213,17 +175,21 @@ all FCDs simultaneously by reusing the encoder’s computations, whereas window-
 FCD independently. A masking strategy depicted with hatching lines prevents temporal leakge.
 
 
+The `fcd_sample` parameter in the `configs/base/default.yaml` file. It can alternatively be specified in individual model configs in `configs/models/`
+
 ```python
-from dataloaders._forking_sequences import fork_sequences
+from dataloaders._forking_sequences import ForkingSequences
 
 # Training — sample FCDs per series
-out = fork_sequences(batch, context_length=512, fcd_samples=4, horizon=6)
+fs_call = ForkingSequences(context_length=512)
+out = fs_call(batch, fcd_samples=4, horizon=6)
 # Training — Use all FCDs per series
-out = fork_sequences(batch, context_length=512, fcd_samples=-1, horizon=6)
+out = fs_call(batch, fcd_samples=-1, horizon=6)
 
 # Val / Test — all valid windows, no sampling
-out = fork_sequences(batch, context_length=512, fcd_samples=-1, horizon=6)
+out = fs_call(batch, fcd_samples=-1, horizon=6)
 ```
+
 
 <br>
 

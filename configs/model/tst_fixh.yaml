@@ -1,2 +1,0 @@
-horizon_override: 512 # Overrides dataset-specific horizon for use by the model
-batch_sampler: HorizonBatchSampler # Could also use BatchSampler given fixed horizon

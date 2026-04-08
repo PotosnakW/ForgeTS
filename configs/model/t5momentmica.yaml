@@ -1,5 +1,6 @@
 # General
 d_model: 256  # Dimension of the model, should be 256 for T5-tiny
+model_type: transformer
 encoder: google/t5-efficient-tiny  # Transformer backbone to use, e.g., google/t5-efficient-tiny
 decoder: none
 output_layer: linear_proj   # not linear_projection
@@ -10,6 +11,9 @@ learn_pe: False
 patch_len: 8
 stride: 1
 hidden_size: 256
+n_layers: 4
+n_heads: 4
+linear_hidden_size: 1024
 dropout: 0.1
 multivariate_head: False
 head_dropout: False
@@ -17,7 +21,6 @@ revin: True
 revin_affine: False
 revin_subtract_last: False
 # TST Encoder params
-res_attention: True # only used with "trasnformer_backbone: 'tst_encoder'"
 d_k: 32
 d_v: 32
 qkv_bias: False
@@ -27,9 +30,6 @@ norm: "BatchNorm"
 activation: 'gelu'
 pre_norm: False
 store_attn: False
-
-loss: quantlie_loss
-quantiles: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
 # MICA variants
 infini_mixer_type: none

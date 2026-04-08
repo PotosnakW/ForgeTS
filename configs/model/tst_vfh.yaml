@@ -1,2 +1,0 @@
-output_patch_len: 8
-batch_sampler: HorizonBatchSampler #required

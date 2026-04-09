@@ -7,6 +7,7 @@ from omegaconf import DictConfig, OmegaConf
 import yaml
 
 from models.transformer import Transformer
+from models.rnn import RNN
 from dataloaders._ts_dataloader import DataLoaderFactory
 from common.train import train, eval_test
 
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 MODEL_TYPES = {
     "transformer": Transformer,
-    # "rnn": RNN,
+    "rnn": RNN,
     # "cnn": CNN,
 }
 
@@ -29,8 +30,6 @@ def get_model(name: str):
         raise ValueError(f"Unknown model '{name}'. Available: {list(MODEL_TYPES.keys())}")
     return MODEL_TYPES[name]
 
-
-# ── Custom resolver: allows ${load:conf/dataset/simglucose.yaml} in split configs ──
 def _load_dataset_file(path: str) -> dict:
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     full_path = os.path.join(project_root, path)

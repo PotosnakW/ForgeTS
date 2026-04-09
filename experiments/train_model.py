@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 MODEL_TYPES = {
     "transformer": Transformer,
     "rnn": RNN,
-    # "cnn": CNN,
+    "cnn": CNN,
 }
 
 def get_model(name: str):
@@ -48,6 +48,7 @@ def main(cfg: DictConfig) -> None:
     )
     mcfg = OmegaConf.create(mcfg)
     mcfg.horizon_override = getattr(cfg.dataset, "horizon_override", None)
+    mcfg.n_channels = getattr(cfg.dataset, "n_channels", None)
     mcfg.horizon = mcfg.horizon_override  # None = dynamic, int = fixed
     dcfg = OmegaConf.create(OmegaConf.to_container(cfg.dataset, resolve=True))
 

@@ -215,7 +215,7 @@ class T5Attention(nn.Module): # Default T5Attention copied from HuggingFace for 
             outputs = outputs + (attn_weights,)
         return outputs
     
-class T5InfiniAttention(T5Attention):
+class T5MICAAttention(T5Attention):
     def __init__(self,
         config: T5Config,
         has_relative_attention_bias=False,
@@ -227,22 +227,38 @@ class T5InfiniAttention(T5Attention):
         self.elu = nn.ELU()
 
         # Select memory update/retrieval methods based on channel exclusion
-        if config.infini_channel_exclusion:
+        if config.mica_channel_exclusion:
             self._update_memory_matrix = self._update_memory_matrix_channelexl
         else:
             self._update_memory_matrix = self._update_memory_matrix_allchannels
 
-        if config.infini_mixer_type.lower() == 'betas':
+        # Select channel weight type:
+        if config.mica_channel_weight_type == 'uniform':
+            self._compute_channel_weights = self._compute_uniform_channel_weights
+        elif config.mica_channel_weight_type == 'static':
+            self.channel_weights = nn.Parameter(torch.ones(1, config.n_channels, config.n_heads, 1, 1))
+            self._compute_channel_weights = self._compute_static_channel_weights
+        elif config.mica_channel_weight_type == 'dynamic':
+            self.channel_attn = nn.Linear(config.d_kv, 1)
+            self._compute_channel_weights = self._compute_query_channel_weights
+        else:
+            raise ValueError(f"mica_channel_weight_type '{config.mica_channel_weight_type}' not recognized. "
+                    f"Use 'uniform', 'static', or 'dynamic'.")
+
+        if config.mica_mixer_type.lower() == 'betas':
             self.mixing_gate = self.beta_mixing_gate
             if beta is not None:
                 self.beta = beta
             else:
-                self.beta = nn.Parameter(torch.rand((1, 1, config.num_heads, 1, 1))*1e-2)
+                if config.channelwise_beta:
+                    self.beta = nn.Parameter(torch.rand((1, config.n_channels, config.num_heads, 1, 1))*1e-2)
+                else:
+                    self.beta = nn.Parameter(torch.rand((1, 1, config.num_heads, 1, 1))*1e-2)
                 # Center values around 0
                 with torch.no_grad():
                     self.beta -= self.beta.mean(dim=2, keepdim=True)
     
-        elif config.infini_mixer_type.lower() == 'mlp':
+        elif config.mica_mixer_type.lower() == 'mlp':
             self.mixing_gate = self.mlp_mixing_gate
             self.mlp = MLP(
                 in_features=config.d_kv * 2,
@@ -252,7 +268,7 @@ class T5InfiniAttention(T5Attention):
                 num_layers=config.mlpmixer_n_layers,
                 dropout=config.mlpmixer_dropout,
             )
-        elif config.infini_mixer_type.lower() == 'mlp_query':
+        elif config.mica_mixer_type.lower() == 'mlp_query':
             self.mixing_gate = self.mlp_query_mixing_gate
             self.mlp = MLP(
                 in_features=config.d_kv * 3,
@@ -263,7 +279,7 @@ class T5InfiniAttention(T5Attention):
                 dropout=config.mlpmixer_dropout,
             )
         else:
-            raise ValueError(f"infini_mixer_type '{config.infini_mixer_type}' not recognized. "
+            raise ValueError(f"mica_mixer_type '{config.mica_mixer_type}' not recognized. "
                     f"Use 'betas', 'mlp', 'mlp_query', or 'none'.")
 
     def compute_bias(self, query_length, key_length, device=None, cache_position=None):
@@ -286,37 +302,51 @@ class T5InfiniAttention(T5Attention):
         values = values.permute([2, 0, 1]).unsqueeze(0).unsqueeze(0)  # shape (1, 1, num_heads, query_length, key_length) --> NEW: added dimension=1 for n_channels
         return values
     
-    def _update_memory_matrix_allchannels(self, key_states, value_states, n_channels):
-        sigma_k = self.elu(key_states) + 1.0  # [batch_size, n_channels, n_heads, n_patch, dim]
-        sigma_k_T = sigma_k.transpose(-2, -1) # [batch_size, n_channels, n_heads, dim, n_patch]
-
-        memory_matrix = torch.matmul(sigma_k_T, value_states).sum(dim=1).unsqueeze(1) # [batch_size, 1, n_heads, dim, dim] sum over channels then unsqueeze to enable broadcasting over channels
-        
-        z = sigma_k.sum(dim=-2).unsqueeze(-1).sum(dim=1) # [batch_size, n_heads, dim, 1] sum over sequence length and channels
-        z = z.unsqueeze(dim=1) # [batch_size, 1, n_heads, dim, 1]
-        
-        return memory_matrix, z
+    def _compute_uniform_channel_weights(self, query_states):
+        return torch.ones(1, 1, 1, 1, 1, device=query_states.device)
     
-    def _update_memory_matrix_channelexl(self, key_states, value_states, n_channels):
+    def _compute_static_channel_weights(self, query_states):
+        return torch.softmax(self.channel_weights, dim=1)  # [1, C, H, 1, 1]
+    
+    def _compute_query_channel_weights(self, query_states):
+        # query_states: [B, C, H, P, D]
+        q_pooled = query_states.mean(dim=3)   # [B, C, H, D]
+        scores = self.channel_attn(q_pooled)  # [B, C, H, 1]
+        return torch.softmax(scores, dim=1).unsqueeze(-1)  # [B, C, H, 1, 1]
+
+    def _update_memory_matrix_allchannels(self, key_states, value_states, query_states, n_channels):
+        w = self._compute_channel_weights(query_states)
         sigma_k = self.elu(key_states) + 1.0  # [batch_size, n_channels, n_heads, n_patch, dim]
         sigma_k_T = sigma_k.transpose(-2, -1) # [batch_size, n_channels, n_heads, dim, n_patch]
 
-        C = key_states.shape(1)
-        memory_matrix = torch.matmul(sigma_k_T, value_states).sum(dim=1).unsqueeze(1) # [batch_size, 1, n_heads, dim, dim] sum over channels then unsqueeze to enable broadcasting over channels
-        memory_matrix = memory_matrix.expand(-1, C, -1, -1, -1) # [batch_size, n_channels, n_heads, dim, dim]
-        memory_matrix -= torch.matmul(sigma_k_T, value_states) # [batch_size, n_channels, n_heads, dim, dim]
+        memory_matrix = torch.matmul(sigma_k_T, value_states) # [B, C, H, D, D]
+        memory_matrix = (w * memory_matrix).sum(dim=1, keepdim=True) # [batch_size, 1, n_heads, dim, dim] sum over channels
+        
+        z = sigma_k.sum(dim=-2).unsqueeze(-1)
+        z = (w * z).sum(dim=1, keepdim=True) # [batch_size, n_heads, dim, 1] sum over sequence length and channels
+    
+        return memory_matrix, z
 
-        z = sigma_k.sum(dim=-2).unsqueeze(-1).sum(dim=1) # [batch_size, n_heads, dim, 1] sum over sequence length and channels
-        z = z.unsqueeze(dim=1)  # [batch_size, 1, n_heads, dim, 1]
-        z = z.expand(-1, C, -1, -1, -1)  # [batch_size, n_channels, n_heads, dim, 1]
-        z -= sigma_k.sum(dim=-2).unsqueeze(-1)  # [batch_size, n_channels, n_heads, dim, 1]
+    def _update_memory_matrix_channelexl(self, key_states, value_states, query_states, n_channels):
+        w = self._compute_channel_weights(query_states)
+        sigma_k = self.elu(key_states) + 1.0  # [batch_size, n_channels, n_heads, n_patch, dim]
+        sigma_k_T = sigma_k.transpose(-2, -1) # [batch_size, n_channels, n_heads, dim, n_patch]
+
+        C = key_states.shape[1]
+        per_channel_mm = torch.matmul(sigma_k_T, value_states)  # [B, C, H, D, D]
+        weighted_sum = (w * per_channel_mm).sum(dim=1, keepdim=True)  # [B, 1, H, D, D]
+        memory_matrix = weighted_sum.expand(-1, C, -1, -1, -1) - w * per_channel_mm  # [B, C, H, D, D]
+
+        per_channel_z = sigma_k.sum(dim=-2).unsqueeze(-1)  # [B, C, H, D, 1]
+        weighted_z_sum = (w * per_channel_z).sum(dim=1, keepdim=True)  # [B, 1, H, D, 1]
+        z = weighted_z_sum.expand(-1, C, -1, -1, -1) - w * per_channel_z  # [B, C, H, D, 1]
 
         return memory_matrix, z
 
-    def retrieve_from_memory(self, query_states, memory_matrix, z_excluded):
+    def retrieve_from_memory(self, query_states, memory_matrix, z):
         sigma_q = self.elu(query_states) + 1.0  # [B, C, H, P, D]
         numerator = sigma_q @ memory_matrix         # [B, C, H, P, D]
-        denominator = (sigma_q @ z_excluded) + 1e-6 # [B, C, H, P, 1]
+        denominator = (sigma_q @ z) + 1e-6 # [B, C, H, P, 1]
         A_mem = numerator / denominator             # [B, C, H, P, D]
     
         return A_mem
@@ -342,7 +372,7 @@ class T5InfiniAttention(T5Attention):
         self,
         n_channels,
         hidden_states,
-        attention_mask=None,
+        mask=None,
         key_value_states=None,
         position_bias=None,
         past_key_values=None,
@@ -355,7 +385,7 @@ class T5InfiniAttention(T5Attention):
         Self-attention (if key_value_states is None) or attention over source sentence (provided by key_value_states).
         """
         # Input is (batch_size, seq_length, dim)
-        # attention_mask is (batch_size, 1, seq_length, seq_length)
+        # Mask is (batch_size, 1, 1, key_length) (non-causal encoder) or (batch_size, 1, n_patch, key_length) (causal decoder)
         # past_key_value[0] is (batch_size, n_heads, q_len - 1, dim_per_head)
         batch_size, seq_length = hidden_states.shape[:2]
 
@@ -438,10 +468,12 @@ class T5InfiniAttention(T5Attention):
                 )
                 position_bias = position_bias[:, :, :, -seq_length:, :]
 
-            if attention_mask is not None:
-                attention_mask = attention_mask.view(batch_size//n_channels, n_channels, 1, seq_length, seq_length)
-                attention_mask = (1.0 - attention_mask.float()) * -1e9
-                position_bias = position_bias + attention_mask
+            if mask is not None:
+                #causal_mask = mask[:, :, :, :, : key_states.shape[-2]]
+                #position_bias = position_bias + causal_mask
+                mask = mask.view(batch_size//n_channels, n_channels, 1, 1, key_states.shape[-2])
+                mask = (1.0 - mask.float()) * -1e9
+                position_bias = position_bias + mask
 
         position_bias_masked = position_bias
 
@@ -457,8 +489,17 @@ class T5InfiniAttention(T5Attention):
         attn_output = torch.matmul(attn_weights, value_states) # [batch_size, n_channels, n_heads, n_patch, dim]
 
         # Infini attention computation across channels
-        memory_matrix, z = self._update_memory_matrix(key_states, value_states, n_channels)
-        A_mem = self.retrieve_from_memory(query_states, memory_matrix, z)
+        memory_matrix, z = self._update_memory_matrix(
+            key_states=key_states, 
+            value_states=value_states, 
+            query_states=query_states, 
+            n_channels=n_channels,
+        )
+        A_mem = self.retrieve_from_memory(
+            query_states=query_states,
+            memory_matrix=memory_matrix,
+            z=z,
+        )
 
         # Channel mixing
         attn_output = self.mixing_gate(
@@ -486,21 +527,21 @@ class T5LayerSelfAttention(nn.Module):
         ):
         super().__init__()
 
-        if config.infini_mixer_type.lower() in ['betas', 'mlp', 'mlp_query']:
-            self.SelfAttention = T5InfiniAttention(
+        if config.mica_mixer_type.lower() in ['betas', 'mlp', 'mlp_query']:
+            self.SelfAttention = T5MICAAttention(
                 config=config, 
                 has_relative_attention_bias=has_relative_attention_bias, 
                 layer_idx=layer_idx, 
                 beta=beta,
             )
-        elif config.infini_mixer_type.lower() == 'none':
+        elif config.mica_mixer_type.lower() == 'none':
             self.SelfAttention = T5Attention(
                 config=config,
                 has_relative_attention_bias=has_relative_attention_bias, 
                 layer_idx=layer_idx
             )
         else:
-            raise ValueError(f"Channel mixing method: {config.infini_mixer_type} not recognized. "
+            raise ValueError(f"Channel mixing method: {config.mica_mixer_type} not recognized. "
                             f"Use 'betas', 'mlp', 'mlp_query', or 'none'.")
 
         self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
@@ -537,21 +578,21 @@ class T5LayerCrossAttention(nn.Module):
     def __init__(self, config, layer_idx: Optional[int] = None, beta: Optional[torch.tensor] = None):
         super().__init__()
 
-        if config.infini_mixer_type.lower() in ['betas', 'mlp', 'mlp_query']:
-            self.EncDecAttention = T5InfiniAttention(
+        if config.mica_mixer_type.lower() in ['betas', 'mlp', 'mlp_query']:
+            self.EncDecAttention = T5MICAAttention(
                 config=config, 
                 has_relative_attention_bias=False, 
                 layer_idx=layer_idx, 
                 beta=beta,
             )
-        elif config.infini_mixer_type.lower() == 'none':
+        elif config.mica_mixer_type.lower() == 'none':
             self.EncDecAttention = T5Attention(
                 config=config, 
                 has_relative_attention_bias=False, 
                 layer_idx=layer_idx
             )
         else:
-            raise ValueError(f"Channel mixing method: {config.infini_mixer_type} not recognized. "
+            raise ValueError(f"Channel mixing method: {config.mica_mixer_type} not recognized. "
                             f"Use 'betas', 'mlp', 'mlp_query', or 'none'.")
     
         self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)

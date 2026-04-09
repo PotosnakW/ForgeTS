@@ -85,9 +85,9 @@ class ScaledDotProductAttention(nn.Module):
         else:
             return output, attn_weights
 
-class InfiniScaledDotProductAttention(ScaledDotProductAttention):
+class MICAScaledDotProductAttention(ScaledDotProductAttention):
     """
-    Scaled Dot-Product Attention with Infini-attention memory mechanism.
+    Scaled Dot-Product Attention with MICA.
     Based on "Attention is All You Need" (Vaswani et al., 2017) and 
     "Leave No Context Behind" (Munkhdalai et al., 2024).
     """
@@ -104,22 +104,39 @@ class InfiniScaledDotProductAttention(ScaledDotProductAttention):
         self.elu = nn.ELU()
         
         # Select memory update/retrieval methods based on channel exclusion
-        if config.infini_channel_exclusion:
+        if config.mica_channel_exclusion:
             self._update_memory_matrix = self._update_memory_matrix_channelexl
         else:
             self._update_memory_matrix = self._update_memory_matrix_allchannels
 
-        if config.infini_mixer_type.lower() == 'betas':
+        # Select channel weight type:
+        if config.mica_channel_weight_type == 'uniform':
+            self._compute_channel_weights = self._compute_uniform_channel_weights
+        elif config.mica_channel_weight_type == 'static':
+            self.channel_weights = nn.Parameter(torch.ones(1, config.n_channels, config.n_heads, 1, 1))
+            self._compute_channel_weights = self._compute_static_channel_weights
+        elif config.mica_channel_weight_type == 'dynamic':
+            self.channel_attn = nn.Linear(d_k, 1)
+            self._compute_channel_weights = self._compute_query_channel_weights
+        else:
+            raise ValueError(f"mica_channel_weight_type '{config.mica_channel_weight_type}' not recognized. "
+                    f"Use 'uniform', 'static', or 'dynamic'.")
+
+        # Select gate mechanism
+        if config.mica_mixer_type.lower() == 'betas':
             self.mixing_gate = self.beta_mixing_gate
             if beta is not None:
                 self.beta = beta
             else:
-                self.beta = nn.Parameter(torch.rand((1, 1, config.n_heads, 1, 1))*1e-2)
+                if config.channelwise_beta:
+                    self.beta = nn.Parameter(torch.rand((1, config.n_channels, config.n_heads, 1, 1))*1e-2)
+                else:
+                    self.beta = nn.Parameter(torch.rand((1, 1, config.n_heads, 1, 1))*1e-2)
                 # Center values around 0
                 with torch.no_grad():
                     self.beta -= self.beta.mean(dim=2, keepdim=True)
     
-        elif config.infini_mixer_type.lower() == 'mlp':
+        elif config.mica_mixer_type.lower() == 'mlp':
             self.mixing_gate = self.mlp_mixing_gate
             self.mlp = MLP(
                 in_features=d_v * 2,
@@ -129,7 +146,7 @@ class InfiniScaledDotProductAttention(ScaledDotProductAttention):
                 num_layers=config.mlpmixer_n_layers,
                 dropout=config.mlpmixer_dropout,
             )
-        elif config.infini_mixer_type.lower() == 'mlp_query':
+        elif config.mica_mixer_type.lower() == 'mlp_query':
             self.mixing_gate = self.mlp_query_mixing_gate
             self.mlp = MLP(
                 in_features=d_v * 3,
@@ -140,40 +157,54 @@ class InfiniScaledDotProductAttention(ScaledDotProductAttention):
                 dropout=config.mlpmixer_dropout,
             )
         else:
-            raise ValueError(f"infini_mixer_type '{config.infini_mixer_type}' not recognized. "
+            raise ValueError(f"mica_mixer_type '{config.mica_mixer_type}' not recognized. "
                     f"Use 'betas', 'mlp', 'mlp_query', or 'none'.")
     
-    def _update_memory_matrix_allchannels(self, key_states, value_states, n_channels):
+    def _compute_uniform_channel_weights(self, query_states):
+        return torch.ones(1, 1, 1, 1, 1, device=query_states.device)
+    
+    def _compute_static_channel_weights(self, query_states):
+        return torch.softmax(self.channel_weights, dim=1)  # [1, C, H, 1, 1]
+    
+    def _compute_query_channel_weights(self, query_states):
+        # query_states: [B, C, H, P, D]
+        q_pooled = query_states.mean(dim=3)   # [B, C, H, D]
+        scores = self.channel_attn(q_pooled)  # [B, C, H, 1]
+        return torch.softmax(scores, dim=1).unsqueeze(-1)  # [B, C, H, 1, 1]
+
+    def _update_memory_matrix_allchannels(self, key_states, value_states, query_states, n_channels):
+        w = self._compute_channel_weights(query_states)
         sigma_k = self.elu(key_states) + 1.0  # [batch_size, n_channels, n_heads, n_patch, dim]
         sigma_k_T = sigma_k.transpose(-2, -1) # [batch_size, n_channels, n_heads, dim, n_patch]
 
-        memory_matrix = torch.matmul(sigma_k_T, value_states).sum(dim=1).unsqueeze(1) # [batch_size, 1, n_heads, dim, dim] sum over channels then unsqueeze to enable broadcasting over channels
+        memory_matrix = torch.matmul(sigma_k_T, value_states) # [B, C, H, D, D]
+        memory_matrix = (w * memory_matrix).sum(dim=1, keepdim=True) # [batch_size, 1, n_heads, dim, dim] sum over channels
         
-        z = sigma_k.sum(dim=-2).unsqueeze(-1).sum(dim=1) # [batch_size, n_heads, dim, 1] sum over sequence length and channels
-        z = z.unsqueeze(dim=1) # [batch_size, 1, n_heads, dim, 1]
-        
+        z = sigma_k.sum(dim=-2).unsqueeze(-1)
+        z = (w * z).sum(dim=1, keepdim=True) # [batch_size, n_heads, dim, 1] sum over sequence length and channels
+    
         return memory_matrix, z
 
-    def _update_memory_matrix_channelexl(self, key_states, value_states, n_channels):
+    def _update_memory_matrix_channelexl(self, key_states, value_states, query_states, n_channels):
+        w = self._compute_channel_weights(query_states)
         sigma_k = self.elu(key_states) + 1.0  # [batch_size, n_channels, n_heads, n_patch, dim]
         sigma_k_T = sigma_k.transpose(-2, -1) # [batch_size, n_channels, n_heads, dim, n_patch]
 
-        C = key_states.shape(1)
-        memory_matrix = torch.matmul(sigma_k_T, value_states).sum(dim=1).unsqueeze(1) # [batch_size, 1, n_heads, dim, dim] sum over channels then unsqueeze to enable broadcasting over channels
-        memory_matrix = memory_matrix.expand(-1, C, -1, -1, -1) # [batch_size, n_channels, n_heads, dim, dim]
-        memory_matrix -= torch.matmul(sigma_k_T, value_states) # [batch_size, n_channels, n_heads, dim, dim]
+        C = key_states.shape[1]
+        per_channel_mm = torch.matmul(sigma_k_T, value_states)  # [B, C, H, D, D]
+        weighted_sum = (w * per_channel_mm).sum(dim=1, keepdim=True)  # [B, 1, H, D, D]
+        memory_matrix = weighted_sum.expand(-1, C, -1, -1, -1) - w * per_channel_mm  # [B, C, H, D, D]
 
-        z = sigma_k.sum(dim=-2).unsqueeze(-1).sum(dim=1) # [batch_size, n_heads, dim, 1] sum over sequence length and channels
-        z = z.unsqueeze(dim=1)  # [batch_size, 1, n_heads, dim, 1]
-        z = z.expand(-1, C, -1, -1, -1)  # [batch_size, n_channels, n_heads, dim, 1]
-        z -= sigma_k.sum(dim=-2).unsqueeze(-1)  # [batch_size, n_channels, n_heads, dim, 1]
+        per_channel_z = sigma_k.sum(dim=-2).unsqueeze(-1)  # [B, C, H, D, 1]
+        weighted_z_sum = (w * per_channel_z).sum(dim=1, keepdim=True)  # [B, 1, H, D, 1]
+        z = weighted_z_sum.expand(-1, C, -1, -1, -1) - w * per_channel_z  # [B, C, H, D, 1]
 
         return memory_matrix, z
 
-    def retrieve_from_memory(self, query_states, memory_matrix, z_excluded):
+    def retrieve_from_memory(self, query_states, memory_matrix, z):
         sigma_q = self.elu(query_states) + 1.0  # [B, C, H, P, D]
         numerator = sigma_q @ memory_matrix         # [B, C, H, P, D]
-        denominator = (sigma_q @ z_excluded) + 1e-6 # [B, C, H, P, 1]
+        denominator = (sigma_q @ z) + 1e-6 # [B, C, H, P, 1]
         A_mem = numerator / denominator             # [B, C, H, P, D]
     
         return A_mem
@@ -202,7 +233,7 @@ class InfiniScaledDotProductAttention(ScaledDotProductAttention):
         v: torch.Tensor,
         n_channels: int,
         prev: Optional[torch.Tensor] = None,
-        attn_attention_maskmask: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ):
         """
         Scaled Dot-Product Attention with memory mechanism.
@@ -213,7 +244,8 @@ class InfiniScaledDotProductAttention(ScaledDotProductAttention):
             v: [bs * n_channels x seq_len x n_heads x d_v]
             n_channels: int
             prev            : [bs x n_heads x q_len x seq_len]
-            attention_mask       : [bs*n_channels x 1 x seq_len x seq_len]
+            key_padding_mask: [bs x seq_len]
+            attention_mask       : [1 x seq_len x seq_len]
             
         Output shape:
             output: [bs x n_channels x n_heads x seq_len x d_v]
@@ -255,8 +287,17 @@ class InfiniScaledDotProductAttention(ScaledDotProductAttention):
         # Infini-attention: retrieve from memory
         # k_for_memory should be [B, C, H, P, D] (not transposed)
         k_for_memory = k.transpose(-2, -1)
-        memory_matrix, z = self._update_memory_matrix(k_for_memory, v, n_channels)
-        A_mem = self.retrieve_from_memory(q, memory_matrix, z)
+        memory_matrix, z = self._update_memory_matrix(
+            key_states=k_for_memory, 
+            value_states=v, 
+            query_states=q, 
+            n_channels=n_channels,
+        )
+        A_mem = self.retrieve_from_memory(
+            query_states=q,
+            memory_matrix=memory_matrix,
+            z=z,
+        )
 
         # Channel mixing
         output = self.mixing_gate(
@@ -276,7 +317,7 @@ class InfiniScaledDotProductAttention(ScaledDotProductAttention):
         
 class MultiheadAttention(nn.Module):
     """
-    Multi-Head Attention with optional Infini-attention memory mechanism.
+    Multi-Head Attention with optional MICA.
     Traditional format similar to standard Transformer implementations.
     """
     
@@ -285,13 +326,7 @@ class MultiheadAttention(nn.Module):
         config,
         beta: Optional[torch.tensor] = None,
     ):
-        """
-        Multi-Head Attention with optional Infini memory mechanism.
-        
-        Args:
-            config: configuration file
-            betas: beta infini parameter
-        """
+
         super().__init__()
         assert (
             not config.hidden_size % config.n_heads
@@ -301,7 +336,7 @@ class MultiheadAttention(nn.Module):
 
         self.hidden_size = config.hidden_size
         self.n_heads = config.n_heads
-        self.infini_mixer_type = config.infini_mixer_type.lower()
+        self.mica_mixer_type = config.mica_mixer_type.lower()
         self.res_attention = config.res_attention
         
         # Q, K, V projections
@@ -309,22 +344,22 @@ class MultiheadAttention(nn.Module):
         self.W_K = nn.Linear(config.hidden_size, self.d_k * config.n_heads, bias=config.qkv_bias)
         self.W_V = nn.Linear(config.hidden_size, self.d_v * config.n_heads, bias=config.qkv_bias)
         
-        # Scaled Dot-Product Attention (vanilla or infini)
-        if config.infini_mixer_type.lower() in ['betas', 'mlp', 'mlp_query']:
-            self.sdp_attn = InfiniScaledDotProductAttention(
+        # Scaled Dot-Product Attention (vanilla or mica)
+        if config.mica_mixer_type.lower() in ['betas', 'mlp', 'mlp_query']:
+            self.sdp_attn = MICAScaledDotProductAttention(
                 config=config,
                 d_k=self.d_k,
                 d_v=self.d_v,
                 beta=beta,
             )
-        elif config.infini_mixer_type == 'none':
+        elif config.mica_mixer_type == 'none':
             self.sdp_attn = ScaledDotProductAttention(
                 config=config,
                 d_k=self.d_k,
                 d_v=self.d_v,
             )
         else:
-            raise ValueError(f"Channel mixing method: {config.infini_mixer_type} not recognized. "
+            raise ValueError(f"Channel mixing method: {config.mica_mixer_type} not recognized. "
                             f"Use 'betas', 'mlp', 'mlp_query', or 'none'.")
 
         # Output projection
@@ -356,7 +391,7 @@ class MultiheadAttention(nn.Module):
             
         Output shape:
             output: [bs*n_channels x seq_len x hidden_size]
-            A_mem: [bs x n_channels x n_heads x seq_len x d_v] (if infini_mixer_type != 'none')
+            A_mem: [bs x n_channels x n_heads x seq_len x d_v] (if mica_mixer_type != 'none')
             attn_weights: [bs*n_channels x 1 x seq_len x seq_len]
         """
 

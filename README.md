@@ -178,7 +178,12 @@ all FCDs simultaneously by reusing the encoder’s computations, whereas window-
 FCD independently. A masking strategy depicted with hatching lines prevents temporal leakge.
 
 
-The `fcd_sample` parameter in the `configs/base/default.yaml` file. It can alternatively be specified in individual model configs in `configs/models/`
+We include an implementation of `forking-sequences` from the methods described in [1, 2]. The `fcd_sample` parameter in the `configs/base/default.yaml` file. It can alternatively be specified in individual model configs in `configs/models/`
+
+1. Wen, R., Torkkola, K., Narayanaswamy, B., & Madeka, D. (2018). *A Multi-Horizon Quantile Recurrent Forecaster*.
+
+2. Potosnak, W., Wolff, M., Cao, M., Ma, R., Konstantinova, T., Efimov, D., Mahoney, M. W., Oreshkin, B., & Olivares, K. G. (2025). *Forking-Sequences*.
+
 
 ```python
 from dataloaders._forking_sequences import ForkingSequences

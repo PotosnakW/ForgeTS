@@ -26,7 +26,7 @@ class TSTEncoder(nn.Module):
     ):
         super().__init__()
 
-        if config.infini_mixer_type == 'betas':
+        if config.mica_mixer_type == 'betas':
             if config.layerwise_beta:
                 beta = None
             else:

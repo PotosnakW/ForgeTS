@@ -1,0 +1,34 @@
+# General
+model_type: transformer
+encoder: patchtst 
+decoder: none
+output_layer: linear_proj   # not linear_projection
+
+d_model: 256  # Dimension of the model, should be 256 for T5-tiny
+pe_type: 'sincos'
+learn_pe: False
+patch_len: 8
+stride: 1
+hidden_size: 256
+n_layers: 4
+n_heads: 4
+linear_hidden_size: 1024
+dropout: 0.1
+head_dropout: False
+revin: True
+revin_affine: False
+revin_subtract_last: False
+# TST Encoder params
+res_attention: True # only used with "trasnformer_backbone: 'tst_encoder'"
+d_k: 32
+d_v: 32
+qkv_bias: False
+attn_dropout: False
+proj_dropout: 0.0
+norm: "BatchNorm"
+activation: 'gelu'
+pre_norm: False
+store_attn: False
+
+# MICA variants
+infini_mixer_type: none

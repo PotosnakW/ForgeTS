@@ -131,7 +131,7 @@ class T5Stack(T5Stack):
         self.is_decoder = config.is_decoder
     
         # check on beta initialization --> people have used zeros and random, which one is best?
-        if config.infini_mixer_type == 'betas':
+        if config.mica_mixer_type == 'betas':
             if config.layerwise_beta:
                 beta = None
             else:

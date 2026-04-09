@@ -1,6 +1,6 @@
 # General
 model_type: transformer
-encoder: patchtst 
+encoder: google/t5-efficient-tiny  # Transformer backbone to use, e.g., google/t5-efficient-tiny
 decoder: none
 output_layer: linear_proj   # not linear_projection
 
@@ -19,7 +19,6 @@ revin: True
 revin_affine: False
 revin_subtract_last: False
 # TST Encoder params
-res_attention: True # only used with "trasnformer_backbone: 'tst_encoder'"
 d_k: 32
 d_v: 32
 qkv_bias: False
@@ -32,9 +31,3 @@ store_attn: False
 
 # MICA variants
 infini_mixer_type: none
-infini_channel_exclusion: False
-layerwise_beta: False
-channelwise_beta: False
-mlpmixer_hidden_size: 128
-mlpmixer_n_layers: 3
-mlpmixer_dropout: 0.1

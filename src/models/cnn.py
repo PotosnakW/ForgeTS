@@ -26,12 +26,8 @@ class Model(nn.Module):
     
     def forward(self, x_enc, available_mask=None, **kwargs):
         batch_size, n_channels, seq_len = x_enc.shape
-
-        x = x_enc.reshape(batch_size * n_channels, seq_len, 1)
-        x = self.W_P(x)           # [B*C, seq_len, hidden_size]
-        x = self.dropout(x)
-
-        enc_out = self.encoder(inputs_embeds=x, n_channels=n_channels)
+        
+        enc_out = self.encoder(inputs_embeds=x_enc, n_channels=n_channels)
         enc_out = enc_out.unsqueeze(2)         # [B*C, seq_len, 1, hidden_size]
 
         dec_out = self.decoder(enc_out)
@@ -46,7 +42,7 @@ class Model(nn.Module):
 
         return output
 
-class RNN(BaseModel):
+class CNN(BaseModel):
     def __init__(self, config):
         super().__init__(config)
 

@@ -5,7 +5,6 @@ decoder: none
 output_layer: linear_proj
 
 # lstm encoder
-d_model: 256
 hidden_size: 256
 n_layers: 4
 dropout: 0.1

@@ -1,10 +1,10 @@
 # General
-model_type: rnn
-encoder: rnn 
+model_type: cnn
+encoder: cnn
 decoder: none
 output_layer: linear_proj
 
-# rnn encoder
+# lstm encoder
 hidden_size: 256
 n_layers: 4
 dropout: 0.1

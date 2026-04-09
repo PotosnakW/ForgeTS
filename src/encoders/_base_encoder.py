@@ -44,6 +44,14 @@ class BaseEncoder:
         elif config.encoder == "patchtst":
             from encoders.tst_encoder import TSTEncoder
             return TSTEncoder(config)
+        
+        elif config.encoder == "rnn":
+            from encoders.rnn_encoder import RNNEncoder
+            return RNNEncoder(config)
+    
+        elif config.encoder == "lstm":
+            from encoders.lstm_encoder import LSTMEncoder
+            return LSTMEncoder(config)
     
         else:
             raise ValueError(f"encoder '{config.encoder}' not recognised.")

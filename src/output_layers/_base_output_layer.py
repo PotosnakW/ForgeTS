@@ -13,8 +13,12 @@ class BaseOutputLayer:
             return IdentityLayer()
         
         elif config.output_layer.lower() == 'linear_proj':
-            from output_layers.linear_proj import Linear_Multivariate_Layer
-            return Linear_Multivariate_Layer(config)
+            from output_layers.linear_proj import LinearProjectionLayer
+            return LinearProjectionLayer(config)
+
+        elif config.output_layer.lower() == 'linear_proj_multivariate':
+            from output_layers.linear_proj import LinearProjectionLayerMultivariate
+            return LinearProjectionLayerMultivariate(config)
 
         else:
             raise ValueError(

@@ -123,6 +123,9 @@ class BaseModel(nn.Module):
         y = y.reshape(B * T, H, C)
         preds = preds.reshape(B * T, H, C, -1)
 
+        print(f"{preds.shape=}")
+        print(f"{y.shape=}")
+
         outsample_mask = batch.get("outsample_mask")
         if outsample_mask is not None:
             mask = outsample_mask.reshape(B * T, H, C).float()

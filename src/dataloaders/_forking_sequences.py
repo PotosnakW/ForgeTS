@@ -38,10 +38,7 @@ def _gather_mask(
 def _unfold_windows(src: Tensor, size: int, step: int) -> Tensor:
     """
     Unfold time dim into sliding windows of `size` spaced `step` apart.
-
-    IMPORTANT: torch.unfold only creates COMPLETE windows.
-    If (T - size) % step != 0, the trailing incomplete window is silently
-    dropped. This is intentional — we never predict beyond available data.
+    torch.unfold only creates COMPLETE windows (does not exceed available data).
 
     Number of windows produced:
         n_fcds = floor((T - size) / step) + 1
@@ -89,17 +86,6 @@ class ForkingSequences:
     step_size      : int
     fcd_sampler    : str    'heterogeneous' (default) | 'homogeneous'
 
-    Note: horizon is passed per-call since batches may have different horizons
-    (variable-horizon model). It is not stored in __init__.
-
-    FCD count guarantee
-    -------------------
-    In both modes the number of FCD windows is:
-        n_fcds = floor((enc_block_len - L - H) / step) + 1
-
-    These are always COMPLETE windows — the last FCD horizon never extends
-    beyond the series end (see _unfold_windows and the samplers).
-
     fcd_samples != -1  (training)
         Sampler picks window_start such that the block fits within [0, S-1].
         The train series is extended by H-1 masked val rows, so the last H-1
@@ -116,8 +102,8 @@ class ForkingSequences:
 
     Inputs  (left-padded, from collate)
     ------------------------------------
-    x_enc          : [B, S, C, 1+Vh]
-    available_mask : [B, S, C]         0=pad/missing/extension, 1=real+in-split
+    x_enc : [B, S, C, 1+Vh]
+    available_mask : [B, S, C]  0=pad/missing, 1=real
 
     Outputs
     -------
@@ -146,10 +132,6 @@ class ForkingSequences:
             if fcd_sampler == "heterogeneous"
             else self._homogeneous_sampler
         )
-
-    # ------------------------------------------------------------------ #
-    # Samplers                                                             #
-    # ------------------------------------------------------------------ #
 
     def _homogeneous_sampler(
         self,
@@ -192,12 +174,11 @@ class ForkingSequences:
         Constraints on window_start[b]
         --------------------------------
         Valid positions are those where available_mask == 1 after collapsing
-        channels with min — a timestep is valid only if ALL channels have real
-        data there. This naturally skips both left-padding AND mid-series gaps.
+        channels with min. A timestep is valid only if ALL channels have real
+        data there.
 
-        Upper bound (scalar, same for all series):
-            window_start + block_len - 1 <= S - 1
-            block_len already includes horizon, so no further subtraction needed.
+        window_start + block_len - 1 <= S - 1
+        block_len already includes horizon, so no further subtraction needed.
 
         The train dataset is extended by H-1 masked rows from the val set, so
         windows whose horizons land in those rows are geometrically valid but
@@ -230,12 +211,8 @@ class ForkingSequences:
 
         window_start = torch.multinomial(
             sample_weights, num_samples=1
-        ).squeeze(1)                                        # [B]
+        ).squeeze(1) # [B]
         return window_start, block_len
-
-    # ------------------------------------------------------------------ #
-    # Main call                                                            #
-    # ------------------------------------------------------------------ #
 
     def __call__(
         self,
@@ -256,20 +233,39 @@ class ForkingSequences:
 
         if fcd_samples != -1:
             window_start, block_len = self.fcd_sampler(available_mask, fcd_samples, H)
-            enc_block  = _gather_block(x_enc_full,    window_start, block_len, S)
-            mask_block = _gather_mask(available_mask, window_start, block_len, S)
+            enc_block = _gather_block(
+                src=x_enc_full, 
+                window_start=window_start, 
+                block_len=block_len, 
+                S=S
+            )
+            mask_block = _gather_mask(
+                mask=available_mask, 
+                window_start=window_start, 
+                block_len=block_len, 
+                S=S
+            )
         else:
-            enc_block  = x_enc_full
+            enc_block = x_enc_full
             mask_block = available_mask
 
-        enc_windows    = _unfold_windows(enc_block,  size=L + H, step=self.step_size)
-        mask_windows   = _unfold_windows(mask_block, size=L + H, step=self.step_size)
+        enc_windows = _unfold_windows(
+            src=enc_block, 
+            size=L + H, 
+            step=self.step_size
+        )
+        mask_windows = _unfold_windows(
+            src=mask_block, 
+            size=L + H, 
+            step=self.step_size
+        )
+
         outsample_mask = mask_windows[:, :, L:, :]
-        enc_size       = enc_block.shape[1] - H
+        enc_size = enc_block.shape[1] - H
 
         out = dict(
-            insample_y     = enc_block[:, :enc_size],
-            outsample_y    = enc_windows[:, :, L:, :, 0],
+            insample_y = enc_block[:, :enc_size],
+            outsample_y = enc_windows[:, :, L:, :, 0],
             outsample_mask = outsample_mask,
             available_mask = mask_block[:, :enc_size],
         )

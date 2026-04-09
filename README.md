@@ -78,25 +78,28 @@ decoder: none          # or transformer, google/t5-efficient-tiny, etc.
 output_layer: linear_proj  # or none
 ```
 
-### Encoders
+### Supported ncoders
 
-| `encoder` | Notes |
-|---|---|
-| `patchtst` | PatchTST-style transformer — recommended default |
-| `google/t5-efficient-tiny` | T5 backbone — use `d_model: 256` |
-| `google/t5-efficient-mini` | |
-| `google/t5-efficient-small` | |
-| `google/t5-efficient-base` | |
-| `google/t5-efficient-large` | |
-| `none` | No encoder — input passed directly to decoder or output layer |
+| `model_type` | `encoder` | Key config params |
+|---|---|---|
+| `transformer` | `patchtst` | `patch_len`, `stride`, `n_heads`, `n_layers`, `hidden_size` |
+| `transformer` | `google/t5-efficient-tiny` | `patch_len`, `stride`, `n_heads`, `n_layers`, `hidden_size` |
+| `transformer` | `google/t5-efficient-mini` | `patch_len`, `stride`, `n_heads`, `n_layers`, `hidden_size` |
+| `transformer` | `google/t5-efficient-small` | `patch_len`, `stride`, `n_heads`, `n_layers`, `hidden_size` |
+| `transformer` | `google/t5-efficient-base` | `patch_len`, `stride`, `n_heads`, `n_layers`, `hidden_size` |
+| `transformer` | `google/t5-efficient-large` | `patch_len`, `stride`, `n_heads`, `n_layers`, `hidden_size` |
+| `transformer` | `none` | — |
+| `rnn` | `rnn` | `n_layers`, `hidden_size`, `dropout` |
+| `rnn` | `lstm` | `n_layers`, `hidden_size`, `dropout` |
+| `rnn` | `none` | — |
 
-### Decoders
+### Supported Decoders
 
 | `decoder` | Notes |
 |---|---|
 | `none` | No decoder — encoder output passed directly to output layer |
 
-### Output Layers
+### Supported Output Layers
 
 | `output_layer` | Notes |
 |---|---|

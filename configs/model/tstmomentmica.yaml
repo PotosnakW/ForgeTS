@@ -1,11 +1,10 @@
 # General
-d_model: 256  # Dimension of the model, should be 256 for T5-tiny
 model_type: transformer
 encoder: patchtst 
 decoder: none
 output_layer: linear_proj   # not linear_projection
 
-torch_dtype: "float32"
+d_model: 256  # Dimension of the model, should be 256 for T5-tiny
 pe_type: 'sincos'
 learn_pe: False
 patch_len: 8
@@ -15,7 +14,6 @@ n_layers: 4
 n_heads: 4
 linear_hidden_size: 1024
 dropout: 0.1
-multivariate_head: False
 head_dropout: False
 revin: True
 revin_affine: False

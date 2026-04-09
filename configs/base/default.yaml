@@ -18,8 +18,8 @@ val_strategy: "exhaustive"   # full pass every val check (default)
 
 
 # ── Training ──────────────────────────────────────────────────
-max_steps: 500            # total optimiser steps (replaces max_epochs)
-val_check_interval: 20      # run validation every N steps
+max_steps: 10            # total optimiser steps (replaces max_epochs)
+val_check_interval: 5      # run validation every N steps
 early_stopping_patience: 10   # number of val checks without improvement before stopping
 learning_rate: 1e-4
 fcd_samples: 1 # 1 for windows-sampling and >1 for forking-sequences

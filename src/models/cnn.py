@@ -26,8 +26,11 @@ class Model(nn.Module):
     
     def forward(self, x_enc, available_mask=None, **kwargs):
         batch_size, n_channels, seq_len = x_enc.shape
+
+        x_enc = x_enc.reshape(batch_size * n_channels, seq_len, 1) # [B*C, seq_len, 1]
+        x_enc = x_enc.permute(0, 2, 1) # [B*C, 1, seq_len]
         
-        enc_out = self.encoder(inputs_embeds=x_enc, n_channels=n_channels)
+        enc_out = self.encoder(x=x_enc, n_channels=n_channels)
         enc_out = enc_out.unsqueeze(2)         # [B*C, seq_len, 1, hidden_size]
 
         dec_out = self.decoder(enc_out)

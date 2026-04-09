@@ -7,9 +7,15 @@ output_layer: linear_proj
 # lstm encoder
 hidden_size: 256
 n_layers: 4
+
+# Regularization
 dropout: 0.1
 head_dropout: 0.0
+
+# Normalization
 revin: True
 revin_affine: False
 revin_subtract_last: False
+
+# Other
 activation: 'gelu'

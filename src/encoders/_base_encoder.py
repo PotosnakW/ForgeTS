@@ -52,6 +52,10 @@ class BaseEncoder:
         elif config.encoder == "lstm":
             from encoders.lstm_encoder import LSTMEncoder
             return LSTMEncoder(config)
+        
+        elif config.encoder == "cnn":
+            from encoders.cnn_encoder import CNNEncoder
+            return CNNEncoder(config)
     
         else:
             raise ValueError(f"encoder '{config.encoder}' not recognised.")

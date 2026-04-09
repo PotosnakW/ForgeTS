@@ -8,6 +8,7 @@ import yaml
 
 from models.transformer import Transformer
 from models.rnn import RNN
+from models.cnn import CNN
 from dataloaders._ts_dataloader import DataLoaderFactory
 from common.train import train, eval_test
 

@@ -14,7 +14,6 @@ class Model(nn.Module):
         super().__init__()
 
         self.hidden_size = config.hidden_size
-        self.context_length = config.context_length
         config.nf = config.hidden_size
 
         self.W_P = nn.Linear(1, config.hidden_size)
@@ -37,12 +36,6 @@ class Model(nn.Module):
         dec_out = self.decoder(enc_out)
         dec_out = dec_out.reshape(batch_size, n_channels, seq_len, 1, self.hidden_size)
         output  = self.output_layer(dec_out)   # [B, C, seq_len, H*c_out]
-
-        # Trim to valid forecast origins — first context_length positions
-        # don't have full lookback so are discarded (mirrors transformer behaviour).
-        # Protects from loss computation on train context rows during validation evaluation.
-        valid_T = seq_len - self.context_length + 1
-        output  = output[:, :, -valid_T:]      # [B, C, valid_T, H*c_out]
 
         return output
 

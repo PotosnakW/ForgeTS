@@ -78,30 +78,30 @@ def _split_per_series(df, val_size, test_size):
 # Pivot → arrays
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _pivot_col(df: pd.DataFrame, col: str, channel_ids: List[str]) -> np.ndarray:
+    return (
+        df.pivot(index="ds", columns="unique_id", values=col)
+        .loc[:, channel_ids]
+        .values
+        .astype(np.float32)
+    )
+
+
 def _pivot_to_arrays(
     df: pd.DataFrame,
     hist_exog_cols: List[str],
     futr_exog_cols: List[str],
     stat_exog_cols: List[str],
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str], np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str], np.ndarray, np.ndarray]:
     df = df.copy()
     if not pd.api.types.is_datetime64_any_dtype(df["ds"]):
         df["ds"] = pd.to_datetime(df["ds"])
-
-    if "available_mask" not in df.columns:
-        raise ValueError(
-            "Column 'available_mask' is missing from the dataframe. "
-            "Please add a column of 1.0 (available) / 0.0 (missing) values. "
-            "If all data is available, add: df['available_mask'] = 1.0"
-        )
 
     channel_ids = sorted(df["unique_id"].unique().tolist())
 
     lengths = df.groupby("unique_id")["ds"].count()
     if lengths.nunique() > 1:
-        warnings.warn(
-            f"Unequal series lengths {lengths.to_dict()} — forward-filling to align."
-        )
+        warnings.warn(f"Unequal series lengths {lengths.to_dict()} — forward-filling to align.")
         mi = pd.MultiIndex.from_product(
             [channel_ids, df["ds"].drop_duplicates().sort_values()],
             names=["unique_id", "ds"],
@@ -114,33 +114,15 @@ def _pivot_to_arrays(
             .reset_index()
         )
 
-    def _piv(col):
-        return (
-            df.pivot(index="ds", columns="unique_id", values=col)
-            .loc[:, channel_ids]
-            .values
-            .astype(np.float32)
-        )
+    T, C           = df["ds"].nunique(), len(channel_ids)
+    y              = _pivot_col(df, "y", channel_ids)
+    hist           = np.stack([_pivot_col(df, c, channel_ids) for c in hist_exog_cols], axis=-1) if hist_exog_cols else np.zeros((T, C, 0), dtype=np.float32)
+    futr           = np.stack([_pivot_col(df, c, channel_ids) for c in futr_exog_cols], axis=-1) if futr_exog_cols else np.zeros((T, C, 0), dtype=np.float32)
+    stat           = df.groupby("unique_id", sort=False)[stat_exog_cols].first().loc[channel_ids].values.astype(np.float32) if stat_exog_cols else np.zeros((C, 0), dtype=np.float32)
+    available_mask = _pivot_col(df, "available_mask", channel_ids)
+    loss_mask      = _pivot_col(df, "loss_mask", channel_ids)
 
-    T, C = df["ds"].nunique(), len(channel_ids)
-    y = _piv("y")                                        # [T, C]
-    hist = (
-        np.stack([_piv(c) for c in hist_exog_cols], axis=-1)
-        if hist_exog_cols else np.zeros((T, C, 0), dtype=np.float32)
-    )
-    futr = (
-        np.stack([_piv(c) for c in futr_exog_cols], axis=-1)
-        if futr_exog_cols else np.zeros((T, C, 0), dtype=np.float32)
-    )
-    stat = (
-        df.groupby("unique_id", sort=False)[stat_exog_cols]
-        .first().loc[channel_ids].values.astype(np.float32)
-        if stat_exog_cols else np.zeros((C, 0), dtype=np.float32)
-    )
-    available_mask = _piv("available_mask")              # [T, C]
-
-    return y, hist, futr, stat, channel_ids, available_mask
-
+    return y, hist, futr, stat, channel_ids, available_mask, loss_mask
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Static metadata
@@ -206,7 +188,8 @@ class FullSeriesDataset(Dataset):
         hist:            np.ndarray,             # [T, C, Vh]
         futr:            np.ndarray,             # [T, C, Vf]
         available_mask:  np.ndarray,             # [T, C]
-        context_length:  int,
+        loss_mask:       np.ndarray, 
+        context_len:     int,
         horizon:         int,
         channel_ids:     List[str] = None,
         metadata:        Optional[SeriesMetadata] = None,
@@ -214,21 +197,26 @@ class FullSeriesDataset(Dataset):
         is_multivariate: bool = False,
     ):
         T, C = y.shape
-        min_len = context_length + horizon
-        if T < min_len:
-            raise ValueError(
-                f"Dataset '{name}': series length {T} < "
-                f"context_length + horizon ({min_len})."
-            )
+        min_len = context_len + horizon
+        if context_len != -1:
+            min_len = context_len + horizon
+            if T < min_len:
+                raise ValueError(
+                    f"Dataset '{name}': series length {T} < "
+                    f"context_length + horizon ({min_len})."
+                )
         self.y = torch.from_numpy(y)
         self.hist = torch.from_numpy(hist)
         self.futr = torch.from_numpy(futr)
         self.available_mask = torch.from_numpy(
             available_mask.astype(np.float32)
         ).contiguous()
+        self.loss_mask = torch.from_numpy(
+            loss_mask.astype(np.float32)
+            ).contiguous()
         self.channel_ids = channel_ids or [str(i) for i in range(C)]
         self.metadata = metadata
-        self.ctx = context_length
+        self.context_len = context_len
         self.horizon = horizon
         self.T = T
         self.name = name
@@ -247,6 +235,7 @@ class FullSeriesDataset(Dataset):
             x_enc           = x_enc,
             x_futr          = self.futr,
             available_mask  = self.available_mask,
+            loss_mask       = self.loss_mask, 
             series_len      = torch.tensor(self.T,       dtype=torch.long),
             horizon         = torch.tensor(self.horizon, dtype=torch.long),
             dataset_name    = self.name,
@@ -259,7 +248,7 @@ class FullSeriesDataset(Dataset):
 
 
 def _make_dataset(
-    y, hist, futr, stat, available_mask, channel_ids, mcfg, horizon, name="",
+    y, hist, futr, stat, available_mask, loss_mask, channel_ids, mcfg, horizon, name="",
     is_multivariate=False,
 ) -> FullSeriesDataset:
     ctx = _ctx(mcfg)
@@ -276,7 +265,8 @@ def _make_dataset(
         hist = hist,
         futr = futr,
         available_mask = available_mask,
-        context_length = ctx,
+        loss_mask = loss_mask,
+        context_len = ctx,
         horizon = horizon,
         channel_ids = channel_ids,
         metadata = metadata,
@@ -286,7 +276,7 @@ def _make_dataset(
 
 
 def _ctx(mcfg) -> int:
-    return getattr(mcfg, "input_size", None) or getattr(mcfg, "context_length", 512)
+    return getattr(mcfg, "input_size", None) or getattr(mcfg, "context_len", 512)
 
 
 def _extend_with_next_split(df: pd.DataFrame, next_df: pd.DataFrame, horizon: int) -> pd.DataFrame:
@@ -304,6 +294,7 @@ def _extend_with_next_split(df: pd.DataFrame, next_df: pd.DataFrame, horizon: in
         .copy()
     )
     extension["available_mask"] = 0.0
+    extension["loss_mask"] = 0.0
     return (
         pd.concat([df, extension])
         .sort_values(["unique_id", "ds"])
@@ -323,59 +314,6 @@ def _pad_left(t: Tensor, target_len: int) -> Tensor:
     return F.pad(t, [0] * (2 * (t.ndim - 1)) + [pad, 0])
 
 
-def _full_series_collate_fn(batch):
-    T_max  = max(s["x_enc"].shape[0]      for s in batch)
-    C_max  = max(s["x_enc"].shape[-2]     for s in batch)
-    Vh_max = max(s["x_enc"].shape[-1] - 1 for s in batch)
-
-    B            = len(batch)
-    channel_mask = torch.zeros(B, C_max,          dtype=torch.float32)
-    hist_mask    = torch.zeros(B, max(Vh_max, 1), dtype=torch.float32)
-
-    out_x_enc  = []
-    out_mask   = []
-    out_x_stat = [] if any("x_stat" in s for s in batch) else None
-
-    for i, s in enumerate(batch):
-        T_i  = s["x_enc"].shape[0]
-        C_i  = s["x_enc"].shape[-2]
-        Vh_i = s["x_enc"].shape[-1] - 1
-
-        x = F.pad(s["x_enc"], (0, Vh_max - Vh_i, 0, C_max - C_i))
-        x = _pad_left(x, T_max)
-        out_x_enc.append(x)
-
-        m = F.pad(s["available_mask"], (0, C_max - C_i))
-        m = _pad_left(m, T_max)
-        out_mask.append(m)
-
-        channel_mask[i, :C_i] = 1.0
-        if Vh_i > 0:
-            hist_mask[i, :Vh_i] = 1.0
-
-        if out_x_stat is not None:
-            stat = s.get("x_stat")
-            if stat is not None:
-                out_x_stat.append(F.pad(stat, (0, 0, 0, C_max - stat.shape[0])))
-            else:
-                out_x_stat.append(torch.zeros(C_max, 1))
-
-    result = dict(
-        x_enc           = torch.stack(out_x_enc),
-        available_mask  = torch.stack(out_mask),
-        channel_mask    = channel_mask,
-        hist_mask       = hist_mask,
-        dataset_name    = [s.get("dataset_name", "unknown") for s in batch],
-        channel_ids     = [s.get("channel_ids",  [])        for s in batch],
-        is_multivariate = batch[0].get("is_multivariate", False),
-    )
-    for key in ("series_len", "horizon"):
-        if key in batch[0]:
-            result[key] = torch.stack([s[key] for s in batch])
-    if out_x_stat:
-        result["x_stat"] = torch.stack(out_x_stat)
-
-    return result
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BatchSampler
@@ -652,8 +590,73 @@ class DataLoaderFactory:
 
     def _arrays_from_df(self, df, entry):
         return _pivot_to_arrays(
-            df, entry.hist_exog_cols, entry.futr_exog_cols, entry.stat_exog_cols
+            df, 
+            entry.hist_exog_cols, 
+            entry.futr_exog_cols, 
+            entry.stat_exog_cols
         )
+    
+    def _full_series_collate_fn(self, batch):
+        ctx       = _ctx(self.mcfg)
+        patch_len = getattr(self.mcfg, "patch_len", 1)
+        min_pad   = ctx - patch_len if ctx != -1 else 0
+
+        T_max  = max(s["x_enc"].shape[0] for s in batch) + min_pad
+        C_max  = max(s["x_enc"].shape[-2] for s in batch)
+        Vh_max = max(s["x_enc"].shape[-1] - 1 for s in batch)
+
+        B            = len(batch)
+        channel_mask = torch.zeros(B, C_max, dtype=torch.float32)
+        hist_mask    = torch.zeros(B, max(Vh_max, 1), dtype=torch.float32)
+
+        out_x_enc     = []
+        out_mask      = []
+        out_loss_mask = []
+        out_x_stat    = [] if any("x_stat" in s for s in batch) else None
+
+        for i, s in enumerate(batch):
+            C_i  = s["x_enc"].shape[-2]
+            Vh_i = s["x_enc"].shape[-1] - 1
+
+            x = F.pad(s["x_enc"], (0, Vh_max - Vh_i, 0, C_max - C_i))
+            x = _pad_left(x, T_max)
+            out_x_enc.append(x)
+
+            m = F.pad(s["available_mask"], (0, C_max - C_i))
+            m = _pad_left(m, T_max)
+            out_mask.append(m)
+
+            lm = F.pad(s["loss_mask"], (0, C_max - C_i))
+            lm = _pad_left(lm, T_max)
+            out_loss_mask.append(lm)
+
+            channel_mask[i, :C_i] = 1.0
+            if Vh_i > 0:
+                hist_mask[i, :Vh_i] = 1.0
+
+            if out_x_stat is not None:
+                stat = s.get("x_stat")
+                if stat is not None:
+                    out_x_stat.append(F.pad(stat, (0, 0, 0, C_max - stat.shape[0])))
+                else:
+                    out_x_stat.append(torch.zeros(C_max, 1))
+
+        result = dict(
+            x_enc           = torch.stack(out_x_enc),
+            available_mask  = torch.stack(out_mask),
+            loss_mask       = torch.stack(out_loss_mask),
+            channel_mask    = channel_mask,
+            hist_mask       = hist_mask,
+            dataset_name    = [s.get("dataset_name", "unknown") for s in batch],
+            channel_ids     = [s.get("channel_ids",  [])        for s in batch],
+            is_multivariate = batch[0].get("is_multivariate", False),
+        )
+        for key in ("series_len", "horizon"):
+            if key in batch[0]:
+                result[key] = torch.stack([s[key] for s in batch])
+        if out_x_stat:
+            result["x_stat"] = torch.stack(out_x_stat)
+        return result
 
     def _build_train(self):
         from dataloaders.ts_sharding import ShardedTrainDataset
@@ -665,7 +668,7 @@ class DataLoaderFactory:
             if getattr(entry, "sharded_dir", None):
                 ds = ShardedTrainDataset(
                     data_dir = entry.sharded_dir,
-                    context_length = _ctx(self.mcfg),
+                    context_len = _ctx(self.mcfg),
                     horizon = entry.horizon,
                     rank = getattr(self, "_rank", 0),
                     world_size = getattr(self, "_world_size", 1),
@@ -681,15 +684,25 @@ class DataLoaderFactory:
             # train/val boundary can form. Predictions landing in these rows
             # have outsample_mask=0 and don't contribute to the loss.
             train_df = _extend_with_next_split(train_df, val_df, entry.horizon)
+            train_df["loss_mask"] = train_df["available_mask"]
 
-            y, hist, futr, stat, channel_ids, available_mask = self._arrays_from_df(
+            y, hist, futr, stat, channel_ids, available_mask, loss_mask = self._arrays_from_df(
                 train_df, entry
             )
             ds = _make_dataset(
-                y, hist, futr, stat, available_mask,
-                channel_ids, self.mcfg, entry.horizon, entry.name,
+                y=y, 
+                hist=hist, 
+                futr=futr, 
+                stat=stat, 
+                available_mask=available_mask,
+                loss_mask=loss_mask,
+                channel_ids=channel_ids,
+                mcfg=self.mcfg, 
+                horizon=entry.horizon, 
+                name=entry.name,
                 is_multivariate=is_multivariate,
             )
+
             self._horizon_groups[group_key].append((ds, entry.weight, entry.name))
 
     def rebuild_for_rank(self, rank: int, world_size: int) -> "DataLoaderFactory":
@@ -699,58 +712,120 @@ class DataLoaderFactory:
         self._build_train()
         return self
 
+    
     def _build_eval_dataset(self, entry, split: str) -> Dataset:
+        if split == "val":
+            return self._build_val_dataset(entry)
+        elif split == "test":
+            return self._build_test_dataset(entry)
+        else:
+            raise ValueError(f"Unknown split '{split}'")
+    
+    def _build_val_dataset(self, entry) -> Dataset:
         entry = _to_cfg(entry)
         is_multivariate = getattr(entry, "multivariate", False)
+        ctx = _ctx(self.mcfg)
 
         if getattr(entry, "sharded_dir", None):
-            if split == "val":
-                from dataloaders.ts_sharding import ShardedValDataset
-                return ShardedValDataset(
-                    data_dir = entry.sharded_dir,
-                    context_length = _ctx(self.mcfg),
-                    horizon = entry.horizon,
-                    name = entry.name,
-                )
-            if split == "test":
-                from dataloaders.ts_sharding import ShardedTestDataset
-                return ShardedTestDataset(
-                    data_dir = entry.sharded_dir,
-                    context_length = _ctx(self.mcfg),
-                    horizon = entry.horizon,
-                    name = entry.name,
-                )
+            from dataloaders.ts_sharding import ShardedValDataset
+            return ShardedValDataset(
+                data_dir       = entry.sharded_dir,
+                context_len = ctx,
+                horizon        = entry.horizon,
+                name           = entry.name,
+            )
 
         df = _load_df(entry.path)
         train_df, val_df, test_df = _split_df(
             df=df, val_size=entry.val_size, test_size=entry.test_size,
         )
-        eval_df = val_df if split == "val" else test_df
-        if eval_df is None or len(eval_df) == 0:
-            raise ValueError(f"Dataset '{entry.name}': '{split}' split is empty.")
 
-        # Extend val with H-1 test rows (mask=0) so windows near the val/test
-        # boundary can form. Test is not extended — no data beyond it exists.
-        if split == "val":
-            eval_df = _extend_with_next_split(eval_df, test_df, entry.horizon)
+        if val_df is None or len(val_df) == 0:
+            raise ValueError(f"Dataset '{entry.name}': val split is empty.")
 
-        # Prepend context rows from train so the encoder has lookback at the
-        # start of the eval window. ctx_rows get mask=0 — encoder sees them
-        # but predictions landing here don't contribute to the loss.
-        if train_df is not None and len(train_df) > 0:
-            ctx_rows = train_df.groupby("unique_id", sort=False).tail(_ctx(self.mcfg)).copy()
-            eval_df = (
-                pd.concat([ctx_rows, eval_df])
-                .sort_values(["unique_id", "ds"])
-                .reset_index(drop=True)
-            )
+        eval_df = _extend_with_next_split(val_df, test_df, entry.horizon)
+        eval_df["loss_mask"] = eval_df["available_mask"]
 
-        y, hist, futr, stat, channel_ids, available_mask = self._arrays_from_df(
+        if ctx == -1:
+            prior_df = train_df.copy()
+        else:
+            prior_df = train_df.groupby("unique_id", sort=False).tail(ctx).copy()
+
+        prior_df["loss_mask"] = 0.0
+
+        eval_df = (
+            pd.concat([prior_df, eval_df])
+            .sort_values(["unique_id", "ds"])
+            .reset_index(drop=True)
+        )
+
+        y, hist, futr, stat, channel_ids, available_mask, loss_mask = self._arrays_from_df(
             eval_df, entry
         )
         return _make_dataset(
-            y, hist, futr, stat, available_mask,
-            channel_ids, self.mcfg, entry.horizon, entry.name,
+            y=y, hist=hist, futr=futr, stat=stat,
+            available_mask=available_mask, loss_mask=loss_mask,
+            channel_ids=channel_ids, mcfg=self.mcfg,
+            horizon=entry.horizon, name=entry.name,
+            is_multivariate=is_multivariate,
+        )
+
+    def _build_test_dataset(self, entry) -> Dataset:
+        entry = _to_cfg(entry)
+        is_multivariate = getattr(entry, "multivariate", False)
+        ctx = _ctx(self.mcfg)
+
+        if getattr(entry, "sharded_dir", None):
+            from dataloaders.ts_sharding import ShardedTestDataset
+            return ShardedTestDataset(
+                data_dir       = entry.sharded_dir,
+                context_len = ctx,
+                horizon        = entry.horizon,
+                name           = entry.name,
+            )
+
+        df = _load_df(entry.path)
+        train_df, val_df, test_df = _split_df(
+            df=df, val_size=entry.val_size, test_size=entry.test_size,
+        )
+
+        if test_df is None or len(test_df) == 0:
+            raise ValueError(f"Dataset '{entry.name}': test split is empty.")
+
+        eval_df = test_df.copy()
+        eval_df["loss_mask"] = eval_df["available_mask"]
+
+        if ctx == -1:
+            prior_df = (
+                pd.concat([train_df, val_df])
+                .sort_values(["unique_id", "ds"])
+                .reset_index(drop=True)
+                .copy()
+            )
+        else:
+            prior_df = (
+                pd.concat([train_df, val_df])
+                .sort_values(["unique_id", "ds"])
+                .reset_index(drop=True)
+            )
+            prior_df = prior_df.groupby("unique_id", sort=False).tail(ctx).copy()
+
+        prior_df["loss_mask"] = 0.0
+
+        eval_df = (
+            pd.concat([prior_df, eval_df])
+            .sort_values(["unique_id", "ds"])
+            .reset_index(drop=True)
+        )
+
+        y, hist, futr, stat, channel_ids, available_mask, loss_mask = self._arrays_from_df(
+            eval_df, entry
+        )
+        return _make_dataset(
+            y=y, hist=hist, futr=futr, stat=stat,
+            available_mask=available_mask, loss_mask=loss_mask,
+            channel_ids=channel_ids, mcfg=self.mcfg,
+            horizon=entry.horizon, name=entry.name,
             is_multivariate=is_multivariate,
         )
 
@@ -830,7 +905,7 @@ class DataLoaderFactory:
             batch_sampler      = batch_sampler,
             num_workers        = self.mcfg.num_workers,
             pin_memory         = True,
-            collate_fn         = _full_series_collate_fn,
+            collate_fn         = self._full_series_collate_fn,
             persistent_workers = self.mcfg.num_workers > 0,
         )
 
@@ -870,7 +945,7 @@ class DataLoaderFactory:
             batch_sampler      = sampler,
             num_workers        = self.mcfg.num_workers,
             pin_memory         = True,
-            collate_fn         = _full_series_collate_fn,
+            collate_fn         = self._full_series_collate_fn,
             persistent_workers = self.mcfg.num_workers > 0,
         )
 
@@ -915,7 +990,7 @@ class DataLoaderFactory:
                 num_workers        = self.mcfg.num_workers,
                 pin_memory         = True,
                 drop_last          = False,
-                collate_fn         = _full_series_collate_fn,
+                collate_fn         = self._full_series_collate_fn,
                 persistent_workers = self.mcfg.num_workers > 0,
             )
         return loaders

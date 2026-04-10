@@ -4,6 +4,7 @@ encoder: google/t5-efficient-tiny  # Transformer backbone to use, e.g., google/t
 decoder: none
 output_layer: linear_proj   # not linear_projection
 
+context_len: 512
 d_model: 256  # Dimension of the model, should be 256 for T5-tiny
 pe_type: 'sincos'
 learn_pe: False

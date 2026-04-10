@@ -96,7 +96,7 @@ class BaseModel(nn.Module):
         self._rank = 0
         self._world_size = 1
         self._fork_sequences = ForkingSequences(
-            context_length = config.context_length,
+            context_len = config.context_len,
             step_size = 1,
             fcd_sampler = config.fcd_sampler,
         )

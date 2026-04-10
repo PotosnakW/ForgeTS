@@ -16,7 +16,7 @@ class Model(nn.Module):
         self.hidden_size = config.hidden_size
         self.patch_len = config.patch_len
         self.stride = config.stride
-        patch_num = int((config.context_length - config.patch_len) / config.stride + 1)
+        patch_num = int((config.context_len - config.patch_len) / config.stride + 1)
         self.patch_num = patch_num
         config.nf = config.hidden_size * patch_num
 
@@ -121,12 +121,18 @@ class Transformer(BaseModel):
         if isinstance(config, dict):
             config = SimpleNamespace(**config)
 
-        assert (config.context_length - config.patch_len) % config.stride == 0, (
-            f"(context_length - patch_len) % stride must be 0, got "
-            f"({config.context_length} - {config.patch_len}) % {config.stride} = "
-            f"{(config.context_length - config.patch_len) % config.stride}"
+        assert config.context_len != -1, (
+            "Transformer requires a fixed context_length — "
+            "it partitions input into patches of size patch_len and cannot "
+            "operate on variable-length context. Set context_len in your config."
         )
-        config.patch_len = min(config.context_length, config.patch_len)
+
+        assert (config.context_len - config.patch_len) % config.stride == 0, (
+            f"(context_length - patch_len) % stride must be 0, got "
+            f"({config.context_len} - {config.patch_len}) % {config.stride} = "
+            f"{(config.context_len - config.patch_len) % config.stride}"
+        )
+        config.patch_len = min(config.context_len, config.patch_len)
         config.c_out = self.loss_fn.outputsize_multiplier
 
         self.fcd_samples = config.fcd_samples

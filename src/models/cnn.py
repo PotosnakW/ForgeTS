@@ -23,20 +23,24 @@ class Model(nn.Module):
         self.decoder = BaseDecoder().get_decoder(config=config)
         self.output_layer = BaseOutputLayer().get_output_layer(config=config)
     
-    def forward(self, x_enc, available_mask=None, **kwargs):
+    def forward(self, x_enc, fcd_samples, available_mask=None, **kwargs):
         batch_size, n_channels, seq_len = x_enc.shape
 
         x_enc = x_enc.reshape(batch_size * n_channels, seq_len, 1) # [B*C, seq_len, 1]
         x_enc = x_enc.permute(0, 2, 1) # [B*C, 1, seq_len]
         
         enc_out = self.encoder(x=x_enc, n_channels=n_channels)
-        enc_out = enc_out.unsqueeze(2)         # [B*C, seq_len, 1, hidden_size]
+       
+        assert fcd_samples > 0, f"fcd_samples must be resolved before Model.forward, got {fcd_samples}"
+        enc_out = enc_out[:, -fcd_samples:, :]
+        enc_out = enc_out.unsqueeze(2)  # [B*C, fcd_samples, 1, hidden_size]
 
         dec_out = self.decoder(enc_out)
         dec_out = dec_out.reshape(batch_size, n_channels, seq_len, 1, self.hidden_size)
         output  = self.output_layer(dec_out)   # [B, C, seq_len, H*c_out]
 
         return output
+
 
 class CNN(BaseModel):
     def __init__(self, config):
@@ -78,6 +82,7 @@ class CNN(BaseModel):
 
         forecast = self.model(
             x_enc = x_enc_in,
+            fcd_samples = batch.get("fcd_samples"),
             available_mask = input_mask,           # [B, C, seq_len]
         )                                          # [B, C, P_total, d_model]
 

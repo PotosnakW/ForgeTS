@@ -139,14 +139,6 @@ class ForkingSequences:
         fcd_samples:    int,
         horizon:        int,
     ) -> Tuple[Tensor, int]:
-        """
-        Sample a single window_start shared across all series in the batch.
-
-        Returns
-        -------
-        window_start : [B]   same index broadcast to all series
-        block_len    : int   total span of one fcd_samples block
-        """
         B, S, _ = available_mask.shape
         L, H    = self.context_len, horizon
 
@@ -158,8 +150,21 @@ class ForkingSequences:
                 f"Reduce fcd_samples, context_len, or horizon."
             )
 
-        window_start = torch.randint(0, max_start + 1, (1,))
-        window_start = window_start.repeat(B)               # [B]
+        # aggregate availability across batch and channels — only sample positions
+        # where real data exists for ALL series and ALL channels
+        time_mask = available_mask.min(dim=2).values   # [B, S] min over channels
+        batch_mask = time_mask.min(dim=0).values       # [S]    min over batch
+
+        sample_weights = batch_mask.float().clone()
+        sample_weights[max_start + 1:] = 0.0           # enforce block fits
+
+        if sample_weights.sum() == 0:
+            # fallback: no position valid for all series — just respect max_start
+            sample_weights = torch.ones(S)
+            sample_weights[max_start + 1:] = 0.0
+
+        window_start = torch.multinomial(sample_weights, num_samples=1)  # [1]
+        window_start = window_start.repeat(B)                            # [B]
         return window_start, block_len
 
     def _heterogeneous_sampler(
@@ -236,10 +241,11 @@ class ForkingSequences:
         if L != -1 and fcd_samples != -1:
             # fixed context, sampled block
             window_start, block_len = self.fcd_sampler(available_mask, fcd_samples, H)
-            enc_block  = _gather_block(src=x_enc_full,     window_start=window_start, block_len=block_len, S=S)
+            enc_block  = _gather_block(src=x_enc_full, window_start=window_start, block_len=block_len, S=S)
             mask_block = _gather_mask( mask=available_mask, window_start=window_start, block_len=block_len, S=S)
             loss_mask_block = _gather_mask( mask=loss_mask, window_start=window_start, block_len=block_len, S=S)
             window_size = L + H
+            # fcd_samples already explicit — no change needed
 
         elif L != -1 and fcd_samples == -1:
             # fixed context, full series
@@ -247,6 +253,7 @@ class ForkingSequences:
             mask_block  = available_mask
             loss_mask_block = loss_mask
             window_size = L + H
+            fcd_samples = (S - L - H) // self.step_size + 1
 
         elif L == -1 and fcd_samples == -1:
             # full context, full series, L defaults to 1
@@ -254,17 +261,21 @@ class ForkingSequences:
             mask_block  = available_mask
             loss_mask_block = loss_mask
             window_size = 1 + H
+            fcd_samples = (S - H) // self.step_size
 
-        else:  # L == -1 and fcd_samples != -1
-            # full context, truncate at window_start + fcd_samples - 1 + H
-            # window_start = first real timestep per series
-            time_mask    = available_mask.min(dim=2).values        # [B, S]
-            window_start = (time_mask > 0).int().argmax(dim=1)     # [B] first real t
-            end          = window_start.max().item() + fcd_samples - 1 + H
-            enc_block    = x_enc_full[:, :end]
-            mask_block   = available_mask[:, :end]
-            loss_mask_block = loss_mask[:, :end]
-            window_size  = 1 + H
+        elif L == -1 and fcd_samples != -1        
+            block_len = (fcd_samples - 1) * self.step_size + H
+            window_start, _ = self._homogeneous_sampler(available_mask, fcd_samples, H)
+            block_end = window_start[0].item() + block_len  # same for all series in batch
+
+            enc_block = x_enc_full[:, :block_end]
+            mask_block = available_mask[:, :block_end]
+            loss_mask_block = loss_mask[:, :block_end]
+            window_size = block_end - (fcd_samples - 1) * self.step_size
+            # fcd_samples already explicit — no change needed
+
+        else:
+            raise Exception(f"fcd_sample={fcd_samples} and context_len={L} combination not recognized.")
 
         enc_windows  = _unfold_windows(src=enc_block,  size=window_size, step=self.step_size)
         loss_mask_windows = _unfold_windows(src=loss_mask_block, size=window_size, step=self.step_size)
@@ -278,6 +289,7 @@ class ForkingSequences:
             outsample_y    = enc_windows[:, :, eff_L:, :, 0],
             outsample_mask = outsample_mask,
             available_mask = mask_block[:, :enc_size],
+            fcd_samples    = fcd_samples
         )
         if hist_mask is not None:
             out["hist_mask"] = hist_mask

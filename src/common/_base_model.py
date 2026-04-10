@@ -123,9 +123,6 @@ class BaseModel(nn.Module):
         y = y.reshape(B * T, H, C)
         preds = preds.reshape(B * T, H, C, -1)
 
-        print(f"{preds.shape=}")
-        print(f"{y.shape=}")
-
         outsample_mask = batch.get("outsample_mask")
         if outsample_mask is not None:
             mask = outsample_mask.reshape(B * T, H, C).float()
@@ -204,7 +201,7 @@ class BaseModel(nn.Module):
                   window is produced with no random sampling.
         """
         raw_batch = self._to_device(raw_batch)
-        fcd_samples = getattr(self.mcfg, "fcd_samples", 8) if self.training else -1
+        fcd_samples = getattr(self.mcfg, "fcd_samples", -1) if self.training else -1
         return self._fork_sequences(
             batch = raw_batch,
             horizon = int(raw_batch["horizon"][0].item()),

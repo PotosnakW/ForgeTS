@@ -290,7 +290,7 @@ def _extend_with_next_split(df: pd.DataFrame, next_df: pd.DataFrame, horizon: in
         return df
     extension = (
         next_df.groupby("unique_id", sort=False)
-        .head(horizon - 1)
+        .head(horizon)
         .copy()
     )
     extension["available_mask"] = 0.0
@@ -750,7 +750,6 @@ class DataLoaderFactory:
             prior_df = train_df.copy()
         else:
             prior_df = train_df.groupby("unique_id", sort=False).tail(ctx).copy()
-
         prior_df["loss_mask"] = 0.0
 
         eval_df = (
@@ -795,19 +794,17 @@ class DataLoaderFactory:
         eval_df = test_df.copy()
         eval_df["loss_mask"] = eval_df["available_mask"]
 
+        prior_df = (
+            pd.concat([train_df, val_df])
+            .sort_values(["unique_id", "ds"])
+            .reset_index(drop=True)
+        )
+
         if ctx == -1:
-            prior_df = (
-                pd.concat([train_df, val_df])
-                .sort_values(["unique_id", "ds"])
-                .reset_index(drop=True)
-                .copy()
-            )
+            # RNN: full history
+            prior_df = prior_df.copy()
         else:
-            prior_df = (
-                pd.concat([train_df, val_df])
-                .sort_values(["unique_id", "ds"])
-                .reset_index(drop=True)
-            )
+            # Transformer: only last L rows
             prior_df = prior_df.groupby("unique_id", sort=False).tail(ctx).copy()
 
         prior_df["loss_mask"] = 0.0

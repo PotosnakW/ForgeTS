@@ -5,7 +5,7 @@ decoder: none
 output_layer: linear_proj
 
 # rnn encoder
-context_len: -1
+context_len: -1 #512
 hidden_size: 256
 n_layers: 4
 
@@ -17,6 +17,3 @@ head_dropout: 0.0
 revin: True
 revin_affine: False
 revin_subtract_last: False
-
-# Other
-activation: 'gelu'

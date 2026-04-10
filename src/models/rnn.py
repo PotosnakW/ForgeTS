@@ -23,20 +23,22 @@ class Model(nn.Module):
         self.decoder = BaseDecoder().get_decoder(config=config)
         self.output_layer = BaseOutputLayer().get_output_layer(config=config)
     
-    def forward(self, x_enc, available_mask=None, **kwargs):
+    def forward(self, x_enc, fcd_samples, available_mask=None, **kwargs):
         batch_size, n_channels, seq_len = x_enc.shape
 
         x = x_enc.reshape(batch_size * n_channels, seq_len, 1)
-        x = self.W_P(x)           # [B*C, seq_len, hidden_size]
+        x = self.W_P(x)                                          # [B*C, seq_len, hidden_size]
         x = self.dropout(x)
 
-        enc_out = self.encoder(inputs_embeds=x, n_channels=n_channels)
-        enc_out = enc_out.unsqueeze(2)         # [B*C, seq_len, 1, hidden_size]
+        enc_out = self.encoder(inputs_embeds=x, n_channels=n_channels) # [B*C, seq_len, hidden_size]
+    
+        assert fcd_samples > 0, f"fcd_samples must be resolved before Model.forward, got {fcd_samples}"
+        enc_out = enc_out[:, -fcd_samples:, :]
+        enc_out = enc_out.unsqueeze(2)  # [B*C, fcd_samples, 1, hidden_size]
 
-        dec_out = self.decoder(enc_out)
-        dec_out = dec_out.reshape(batch_size, n_channels, seq_len, 1, self.hidden_size)
-        output  = self.output_layer(dec_out)   # [B, C, seq_len, H*c_out]
-
+        dec_out = self.decoder(enc_out)                          # [B*C, T, 1, hidden_size]
+        dec_out = dec_out.reshape(batch_size, n_channels, fcd_samples, 1, self.hidden_size)
+        output  = self.output_layer(dec_out)                     # [B, C, T, H*c_out]
         return output
 
 class RNN(BaseModel):
@@ -79,6 +81,7 @@ class RNN(BaseModel):
 
         forecast = self.model(
             x_enc = x_enc_in,
+            fcd_samples = batch.get("fcd_samples"),
             available_mask = input_mask,           # [B, C, seq_len]
         )                                          # [B, C, P_total, d_model]
 
@@ -94,5 +97,7 @@ class RNN(BaseModel):
         B, C, T, _ = forecast.shape
         forecast = forecast.reshape(B, C, T, horizon, -1)  # [B, C, T, H, Q]
         forecast = forecast.permute(0, 2, 3, 1, 4)        # [B, T, H, C, Q]
+
+        print(f"{forecast.shape=}")
     
         return forecast                                    # [B, T, H, C, Q]

@@ -4,7 +4,6 @@ import time
 from abc import abstractmethod
 from pathlib import Path
 from typing import Callable, Dict, Optional
-from functools import partial
 
 import numpy as np
 import torch
@@ -14,40 +13,12 @@ from torch.utils.data import DataLoader
 import torch.distributed as dist
 from tqdm import tqdm
 
-from ._utils import EarlyStopper
+from ._utils import CheckpointManager, EarlyStopper
 from dataloaders._forking_sequences import ForkingSequences
 from metrics.torch_losses import get_loss
 
 logger = logging.getLogger(__name__)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Checkpoint manager
-# ─────────────────────────────────────────────────────────────────────────────
-
-class CheckpointManager:
-    def __init__(self, checkpoint_dir: str, checkpoint_step: int = 1000):
-        self.checkpoint_dir  = Path(checkpoint_dir)
-        self.checkpoint_step = checkpoint_step
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-    def step(self, step: int, model: nn.Module, **extra) -> None:
-        if step % self.checkpoint_step != 0:
-            return
-        path = self.checkpoint_dir / f"ckpt_step={step:07d}.pt"
-        torch.save({"step": step, "model_state_dict": model.state_dict(), **extra}, path)
-        logger.info("Checkpoint saved → %s", path)
-
-    def load(self, path: str, model: nn.Module, map_location: str = "cpu") -> dict:
-        payload = torch.load(path, map_location=map_location)
-        model.load_state_dict(payload["model_state_dict"])
-        logger.info("Checkpoint loaded ← %s", path)
-        return payload
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Infinite loader
-# ─────────────────────────────────────────────────────────────────────────────
 
 class _InfiniteLoader:
     def __init__(self, loader: DataLoader):
@@ -70,10 +41,6 @@ class _InfiniteLoader:
             return next(self._iter)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BaseModel
-# ─────────────────────────────────────────────────────────────────────────────
-
 class BaseModel(nn.Module):
     """
     nn.Module base that also owns the step-based training loop.
@@ -95,10 +62,18 @@ class BaseModel(nn.Module):
         self._training_ready = False
         self._rank = 0
         self._world_size = 1
-        self._fork_sequences = ForkingSequences(
+        
+        self.fcd_samples = config.fcd_samples
+        self._fork_sequences_train = ForkingSequences(
             context_len = config.context_len,
+            fcd_samples = config.fcd_samples,
             step_size = 1,
             fcd_sampler = config.fcd_sampler,
+        )
+        self._fork_sequences_eval = ForkingSequences(
+            context_len = config.context_len,
+            fcd_samples = -1,
+            step_size = 1,
         )
 
         loss_fn = get_loss(config.loss)
@@ -201,14 +176,15 @@ class BaseModel(nn.Module):
                   window is produced with no random sampling.
         """
         raw_batch = self._to_device(raw_batch)
-        fcd_samples = getattr(self.mcfg, "fcd_samples", -1) if self.training else -1
-        return self._fork_sequences(
-            batch = raw_batch,
-            horizon = int(raw_batch["horizon"][0].item()),
-            fcd_samples = fcd_samples,
-        )
+        horizon = int(raw_batch["horizon"][0].item())
+        if self.training:
+            fcd_samples = self._get_fcd_samples()  # @ WP TODO: curriculum learning
+            return self._fork_sequences_train(raw_batch, horizon, fcd_samples=fcd_samples)
+        return self._fork_sequences_eval(raw_batch, horizon)
 
-    # ── core steps ───────────────────────────────────────────────────────────
+    def _get_fcd_samples(self):
+        self._assert_training_ready()
+        return self.fcd_samples # @ WP TODO: curriculum learning
 
     def train_step(self, raw_batch: Dict[str, Tensor]) -> float:
         self._assert_training_ready()

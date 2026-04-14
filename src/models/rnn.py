@@ -97,7 +97,5 @@ class RNN(BaseModel):
         B, C, T, _ = forecast.shape
         forecast = forecast.reshape(B, C, T, horizon, -1)  # [B, C, T, H, Q]
         forecast = forecast.permute(0, 2, 3, 1, 4)        # [B, T, H, C, Q]
-
-        print(f"{forecast.shape=}")
     
         return forecast                                    # [B, T, H, C, Q]

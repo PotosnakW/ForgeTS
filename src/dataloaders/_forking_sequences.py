@@ -7,13 +7,13 @@ def _gather_block(
     src:          Tensor,   # [B, S, C, *extra]
     window_start: Tensor,   # [B]
     block_len:    int,
-    S:            int,
+    T:            int,
 ) -> Tensor:
     """Gather a contiguous block of `block_len` steps forward from window_start."""
     B     = src.shape[0]
     extra = src.shape[2:]
     offsets = torch.arange(block_len, device=src.device)
-    grid    = (window_start.unsqueeze(1) + offsets.unsqueeze(0)).clamp(0, S - 1)
+    grid    = (window_start.unsqueeze(1) + offsets.unsqueeze(0)).clamp(0, T - 1)
     return src.gather(
         1,
         grid.unsqueeze(-1).unsqueeze(-1).expand(B, block_len, *extra)
@@ -24,13 +24,13 @@ def _gather_mask(
     mask:         Tensor,   # [B, S, C]
     window_start: Tensor,   # [B]
     block_len:    int,
-    S:            int,
+    T:            int,
 ) -> Tensor:
     B, _, C = mask.shape
     grid = (
         window_start.unsqueeze(1)
         + torch.arange(block_len, device=mask.device).unsqueeze(0)
-    ).clamp(0, S - 1)                                     # [B, block_len]
+    ).clamp(0, T - 1)                                     # [B, block_len]
     grid = grid.unsqueeze(-1).expand(B, block_len, C)     # [B, block_len, C]
     return mask.gather(1, grid)                           # [B, block_len, C]
 
@@ -118,20 +118,30 @@ class ForkingSequences:
     def __init__(
         self,
         context_len: int,
-        step_size:      int = 1,
-        fcd_sampler:    str = "heterogeneous",
+        fcd_samples: int = -1,
+        step_size: int = 1,
+        fcd_sampler: str = "heterogeneous",
     ):
         if fcd_sampler not in self.SAMPLERS:
             raise ValueError(
                 f"fcd_sampler must be one of {self.SAMPLERS}, got '{fcd_sampler}'"
             )
         self.context_len = context_len
-        self.step_size      = step_size
-        self.fcd_sampler    = (
+        self.step_size = step_size
+        self.fcd_sampler = (
             self._heterogeneous_sampler
             if fcd_sampler == "heterogeneous"
             else self._homogeneous_sampler
         )
+
+        if context_len != -1 and fcd_samples != -1:
+            self._strategy = self._sampled_fcds_fixed_context
+        elif context_len != -1 and fcd_samples == -1:
+            self._strategy = self._all_fcds_fixed_context
+        elif context_len == -1 and fcd_samples != -1:
+            self._strategy = self._sampled_fcds_full_context
+        else:
+            self._strategy = self._all_fcds_full_context
 
     def _homogeneous_sampler(
         self,
@@ -218,79 +228,178 @@ class ForkingSequences:
             sample_weights, num_samples=1
         ).squeeze(1) # [B]
         return window_start, block_len
+    
+    def _sampled_fcds_fixed_context(
+        self, 
+        batch: Dict[str, Tensor],
+        horizon: int,
+        fcd_samples: int,
+    ) -> Dict[str, Tensor]:
+        """
+        Fixed context length, sampled windows.
+
+        Gathers a contiguous block of fcd_samples windows from a randomly sampled
+        anchor per series (heterogeneous) or shared anchor (homogeneous). Window
+        size is always context_len + horizon — consistent across the batch because
+        context_len is fixed.
+        """
+
+        x_enc_full = batch["x_enc"]
+        available_mask = batch["available_mask"]
+        loss_mask = batch["loss_mask"]
+        #hist_mask = batch.get("hist_mask")
+
+        B, T, C, _ = x_enc_full.shape
+        
+        window_start, block_len = self.fcd_sampler(
+            available_mask=available_mask, 
+            fcd_samples=fcd_samples,
+            horizon=horizon,
+        )
+        enc_block  = _gather_block(
+            src=x_enc_full, 
+            window_start=window_start, 
+            block_len=block_len, 
+            T=T,
+        )
+        mask_block = _gather_mask(
+            mask=available_mask, 
+            window_start=window_start, 
+            block_len=block_len, 
+            T=T,
+        )
+        loss_mask_block = _gather_mask(
+            mask=loss_mask, 
+            window_start=window_start, 
+            block_len=block_len, 
+            T=T,
+        )
+        window_size = self.context_len + horizon
+        
+        return enc_block, mask_block, loss_mask_block, window_size, fcd_samples
+
+    def _all_fcds_fixed_context(
+        self, 
+        batch: Dict[str, Tensor],
+        horizon: int,
+        **_,
+    ) -> Dict[str, Tensor]:
+        """
+        Fixed context length, all valid windows.
+
+        Passes the full series to _unfold_windows with window_size = context_len +
+        horizon. valid_fcds is derived from T — no sampling.
+        """
+        
+        x_enc_full = batch["x_enc"]
+        available_mask = batch["available_mask"]
+        loss_mask = batch["loss_mask"]
+        #hist_mask = batch.get("hist_mask")
+
+        B, T, C, _ = x_enc_full.shape
+
+        enc_block   = x_enc_full
+        mask_block  = available_mask
+        loss_mask_block = loss_mask
+        window_size = self.context_len + horizon
+        valid_fcds = (T - self.context_len - horizon) // self.step_size + 1
+
+        return enc_block, mask_block, loss_mask_block, window_size, valid_fcds
+
+    def _sampled_fcds_full_context(
+        self, 
+        batch: Dict[str, Tensor],
+        horizon: int,
+        fcd_samples: int,
+    ) -> Dict[str, Tensor]:
+        """
+        Full context (context_len=-1), sampled windows.
+
+        Must use the homogeneous sampler — without a fixed context_len, a per-series
+        anchor would produce different window sizes across the batch, breaking the
+        tensor shape assumption. The homogeneous sampler enforces a single shared
+        anchor so window_size = block_end - (fcd_samples-1)*step_size is consistent
+        across all series in the batch.
+        """
+        
+        x_enc_full = batch["x_enc"]
+        available_mask = batch["available_mask"]
+        loss_mask = batch["loss_mask"]
+        #hist_mask = batch.get("hist_mask")
+
+        B, T, C, _ = x_enc_full.shape
+
+        block_len = (fcd_samples - 1) * self.step_size + horizon
+        window_start, _ = self._homogeneous_sampler(
+            available_mask=available_mask, 
+            fcd_samples=fcd_samples, 
+            horizon=horizon,
+        )
+        block_end = window_start[0].item() + block_len  # same for all series in batch
+
+        enc_block = x_enc_full[:, :block_end]
+        mask_block = available_mask[:, :block_end]
+        loss_mask_block = loss_mask[:, :block_end]
+        window_size = block_end - (fcd_samples - 1) * self.step_size
+
+        return enc_block, mask_block, loss_mask_block, window_size, fcd_samples
+
+    def _all_fcds_full_context(
+        self, 
+        batch: Dict[str, Tensor],
+        horizon: int,
+        **_,
+    ) -> Dict[str, Tensor]:
+        """
+        Full context (context_len=-1), all valid windows.
+
+        Passes the full series to _unfold_windows with window_size = 1 + horizon.
+        Every timestep is a valid anchor — autoregressive interpretation. valid_fcds
+        derived from T, no sampling.
+        """
+            
+        x_enc_full = batch["x_enc"]
+        available_mask = batch["available_mask"]
+        loss_mask = batch["loss_mask"]
+        #hist_mask = batch.get("hist_mask")
+
+        B, T, C, _ = x_enc_full.shape
+
+        enc_block   = x_enc_full
+        mask_block  = available_mask
+        loss_mask_block = loss_mask
+        window_size = 1 + horizon
+        valid_fcds = (T - horizon) // self.step_size
+
+        return enc_block, mask_block, loss_mask_block, window_size, valid_fcds
 
     def __call__(
         self,
         batch: Dict[str, Tensor],
         horizon: int,
-        fcd_samples: int,
+        fcd_samples: int=-1,
     ) -> Dict[str, Tensor]:
-        
-        x_enc_full = batch["x_enc"]
-        available_mask = batch["available_mask"]
-        loss_mask = batch["loss_mask"]
-        hist_mask = batch.get("hist_mask")
 
-        B, S, C, _ = x_enc_full.shape
-        assert available_mask.shape == (B, S, C), (
-            f"available_mask must be [B, S, C] = [{B}, {S}, {C}], "
-            f"got {tuple(available_mask.shape)}"
+        enc_block, mask_block, loss_mask_block, window_size ,valid_fcds = self._strategy(
+            batch=batch, 
+            horizon=horizon, 
+            fcd_samples=fcd_samples,
         )
-        L, H = self.context_len, horizon
-
-        if L != -1 and fcd_samples != -1:
-            # fixed context, sampled block
-            window_start, block_len = self.fcd_sampler(available_mask, fcd_samples, H)
-            enc_block  = _gather_block(src=x_enc_full, window_start=window_start, block_len=block_len, S=S)
-            mask_block = _gather_mask( mask=available_mask, window_start=window_start, block_len=block_len, S=S)
-            loss_mask_block = _gather_mask( mask=loss_mask, window_start=window_start, block_len=block_len, S=S)
-            window_size = L + H
-            # fcd_samples already explicit — no change needed
-
-        elif L != -1 and fcd_samples == -1:
-            # fixed context, full series
-            enc_block   = x_enc_full
-            mask_block  = available_mask
-            loss_mask_block = loss_mask
-            window_size = L + H
-            fcd_samples = (S - L - H) // self.step_size + 1
-
-        elif L == -1 and fcd_samples == -1:
-            # full context, full series, L defaults to 1
-            enc_block   = x_enc_full
-            mask_block  = available_mask
-            loss_mask_block = loss_mask
-            window_size = 1 + H
-            fcd_samples = (S - H) // self.step_size
-
-        elif L == -1 and fcd_samples != -1        
-            block_len = (fcd_samples - 1) * self.step_size + H
-            window_start, _ = self._homogeneous_sampler(available_mask, fcd_samples, H)
-            block_end = window_start[0].item() + block_len  # same for all series in batch
-
-            enc_block = x_enc_full[:, :block_end]
-            mask_block = available_mask[:, :block_end]
-            loss_mask_block = loss_mask[:, :block_end]
-            window_size = block_end - (fcd_samples - 1) * self.step_size
-            # fcd_samples already explicit — no change needed
-
-        else:
-            raise Exception(f"fcd_sample={fcd_samples} and context_len={L} combination not recognized.")
 
         enc_windows  = _unfold_windows(src=enc_block,  size=window_size, step=self.step_size)
         loss_mask_windows = _unfold_windows(src=loss_mask_block, size=window_size, step=self.step_size)
 
-        eff_L = window_size - H   # 1 when ctx==-1, L otherwise
+        eff_L = window_size - horizon
         outsample_mask = loss_mask_windows[:, :, eff_L:, :]
-        enc_size = enc_block.shape[1] - H
+        enc_size = enc_block.shape[1] - horizon
 
         out = dict(
-            insample_y     = enc_block[:, :enc_size],
-            outsample_y    = enc_windows[:, :, eff_L:, :, 0],
+            insample_y = enc_block[:, :enc_size],
+            outsample_y = enc_windows[:, :, eff_L:, :, 0],
             outsample_mask = outsample_mask,
             available_mask = mask_block[:, :enc_size],
-            fcd_samples    = fcd_samples
+            fcd_samples = valid_fcds
         )
-        if hist_mask is not None:
-            out["hist_mask"] = hist_mask
+        # if hist_mask is not None:
+        #     out["hist_mask"] = hist_mask
         return out

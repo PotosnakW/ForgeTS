@@ -74,25 +74,11 @@ class RNN(BaseModel):
         x_enc_in = x.permute(0, 2, 1) # [B, C, L+(T-1)*step_size]
         input_mask = input_mask.permute(0, 2, 1) # [B, C, L+(T-1)*step_size]
 
-        if self.revin:
-            x_enc_in = x_enc_in.permute(0, 2, 1)  # [B, seq_len, C]
-            x_enc_in = self.revin_layer(x_enc_in, "norm")
-            x_enc_in = x_enc_in.permute(0, 2, 1)  # [B, C, seq_len]
-
         forecast = self.model(
             x_enc = x_enc_in,
             fcd_samples = batch.get("fcd_samples"),
             available_mask = input_mask,           # [B, C, seq_len]
         )                                          # [B, C, P_total, d_model]
-
-        # RevIN denorm:
-        if self.revin:
-            B, C, T, Hc = forecast.shape
-            forecast = forecast.permute(0, 2, 1, 3).reshape(B * T, C, Hc)  # [B*T, C, H*c_out]
-            forecast = forecast.permute(0, 2, 1)                            # [B*T, H*c_out, C]
-            forecast = self.revin_layer(forecast, "denorm")                 # [B*T, H*c_out, C]
-            forecast = forecast.permute(0, 2, 1).reshape(B, T, C, Hc)      # [B, T, C, H*c_out]
-            forecast = forecast.permute(0, 2, 1, 3)                        # [B, C, T, H*c_out]
 
         B, C, T, _ = forecast.shape
         forecast = forecast.reshape(B, C, T, horizon, -1)  # [B, C, T, H, Q]

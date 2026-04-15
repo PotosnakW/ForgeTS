@@ -86,7 +86,7 @@ class BaseModel(nn.Module):
     def forward(self, batch: Dict[str, Tensor]) -> Tensor:
         ...
 
-    def compute_loss(self, preds: Tensor, batch: Dict[str, Tensor]) -> Tensor:
+    def compute_loss(self, batch: Dict[str, Tensor]) -> Tensor:
         """
         pred           : [B, T, H, C]
         outsample_y    : [B, T, H, C]
@@ -96,6 +96,7 @@ class BaseModel(nn.Module):
         B, T, H, C = y.shape
 
         y = y.reshape(B * T, H, C)
+        preds = batch["preds"]
         preds = preds.reshape(B * T, H, C, -1)
 
         outsample_mask = batch.get("outsample_mask")
@@ -193,8 +194,13 @@ class BaseModel(nn.Module):
 
         self.optimizer.zero_grad(set_to_none=True)
         fwd  = self.__dict__.get('_ddp_model', self)
+
+        batch = self.scaler(batch, norm_type='norm')
         preds = fwd(batch)
-        loss = self.compute_loss(preds=preds, batch=batch)
+        batch["preds"] = preds
+        batch = self.scaler(batch, norm_type='denorm')
+
+        loss = self.compute_loss(batch=batch)
         loss.backward()
         nn.utils.clip_grad_norm_(self.parameters(), self.mcfg.gradient_clip_val)
         self.optimizer.step()
@@ -208,8 +214,13 @@ class BaseModel(nn.Module):
         self._assert_training_ready()
         self.eval()
         batch = self._prepare_batch(raw_batch)
+
+        batch = self.scaler(batch, norm_type='norm')
         preds = self(batch)
-        return self.compute_loss(preds=preds, batch=batch).item()
+        batch["preds"] = preds
+        batch = self.scaler(batch, norm_type='denorm')
+    
+        return self.compute_loss(batch=batch).item()
 
     @torch.no_grad()
     def validate(self) -> Dict[str, Dict[str, float]]:
@@ -231,16 +242,18 @@ class BaseModel(nn.Module):
         raw_batch = self._to_device(raw_batch)
         batch     = self._prepare_batch(raw_batch)
 
-        pred           = self(batch).cpu().float()       # [B, n_fcds, H, C_out]
-        targets        = batch["outsample_y"].cpu()      # [B, n_fcds, H, C]
+        batch = self.scaler(batch, norm_type='norm')
+        preds = self(batch)
+        batch["preds"] = preds
+        batch = self.scaler(batch, norm_type='denorm')
+
+        preds = batch["preds"].cpu().float()       # [B, n_fcds, H, C_out]
+        targets = batch["outsample_y"].cpu()      # [B, n_fcds, H, C]
         outsample_mask = batch.get("outsample_mask")
         if outsample_mask is not None:
             outsample_mask = outsample_mask.cpu()
 
-        C    = targets.shape[-1]
-        pred = pred[..., :C]
-
-        return dict(pred=pred, targets=targets, outsample_mask=outsample_mask)
+        return dict(preds=preds, targets=targets, outsample_mask=outsample_mask)
 
     @torch.no_grad()
     def predict(self, loader, device=None):

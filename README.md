@@ -170,23 +170,31 @@ Groups datasets by horizon so all items in a batch share the same `H`. Required 
 
 ## Forking-sequences
 
-<img src="figures/window_sampling.gif" alt="grid" width="500"/>
-<img src="figures/forking_sequences.gif" alt="grid" width="500"/>
-
-<img src="figures/fs_grid_diagram.png" alt="grid" width="500"/>
-
-Fig. Example of a forking-sequences target grid. The validation set, marked in blue, corresponds to the data
-between the dotted lines, while the test set is shown in orange. Forking-sequences architectures generate forecasts for
-all FCDs simultaneously by reusing the encoder’s computations, whereas window-sampling produces forecasts for each
-FCD independently. A masking strategy depicted with hatching lines prevents temporal leakge.
-
-
-We include an implementation of `forking-sequences` from the methods described in [1, 2]. The `fcd_sample` parameter in the `configs/base/default.yaml` file. It can alternatively be specified in individual model configs in `configs/models/`
+Forking-sequences architectures generate forecasts for all FCDs simultaneously by reusing the encoder’s computations, whereas window-sampling produces forecasts for each FCD independently. We include an implementation of `forking-sequences` from the methods described in [1, 2]. 
 
 1. Wen, R., Torkkola, K., Narayanaswamy, B., & Madeka, D. (2018). *A Multi-Horizon Quantile Recurrent Forecaster*.
 
 2. Potosnak, W., Wolff, M., Cao, M., Ma, R., Konstantinova, T., Efimov, D., Mahoney, M. W., Oreshkin, B., & Olivares, K. G. (2025). *Forking-Sequences*.
 
+<p align="center">
+  <img src="figures/window_sampling.gif" width="450"/>
+  <img src="figures/forking_sequences.gif" width="450"/>
+</p>
+
+<p align="center">
+  <em>(a) Window-Sampling &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; (b) Forking-Sequences</em>
+</p>
+
+<p align="center">
+<img src="figures/fs_grid_diagram.png" alt="grid" width="450"/>
+</p>
+
+<p align="center">
+  (c) Forking-Sequences grid from [2]
+</p>
+
+
+The `fcd_sample` parameter in the `configs/base/default.yaml` file. It can alternatively be specified in individual model configs in `configs/models/`
 
 ```python
 from dataloaders._forking_sequences import ForkingSequences

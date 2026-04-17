@@ -170,9 +170,8 @@ Groups datasets by horizon so all items in a batch share the same `H`. Required 
 
 ## Forking-sequences
 
-<img src="figures/window_sampling_gif" alt="grid" width="500"/>
-
-<img src="figures/forking_sequences_gif" alt="grid" width="500"/>
+<img src="figures/window_sampling.gif" alt="grid" width="500"/>
+<img src="figures/forking_sequences.gif" alt="grid" width="500"/>
 
 <img src="figures/fs_grid_diagram.png" alt="grid" width="500"/>
 

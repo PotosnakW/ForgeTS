@@ -177,8 +177,8 @@ Forking-sequences architectures generate forecasts for all FCDs simultaneously b
 2. Potosnak, W., Wolff, M., Cao, M., Ma, R., Konstantinova, T., Efimov, D., Mahoney, M. W., Oreshkin, B., & Olivares, K. G. (2025). *Forking-Sequences*.
 
 <p align="center">
-  <img src="figures/window_sampling.gif" width="450"/>
-  <img src="figures/forking_sequences.gif" width="450"/>
+  <img src="figures/window_sampling.gif" width="400"/>
+  <img src="figures/forking_sequences.gif" width="400"/>
 </p>
 
 <p align="center">
@@ -186,7 +186,7 @@ Forking-sequences architectures generate forecasts for all FCDs simultaneously b
 </p>
 
 <p align="center">
-<img src="figures/fs_grid_diagram.png" alt="grid" width="450"/>
+<img src="figures/fs_grid_diagram.png" alt="grid" width="400"/>
 </p>
 
 <p align="center">

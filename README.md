@@ -19,7 +19,8 @@
 | 7  | [Metrics](#metrics)                               |
 | 8  | [Inference](#inference)                           |
 | 9  | [Forecast Ensembling](#forecast-ensembling)       |
-| 10 | [License](#license)                               |
+| 10 | [Citations](#citations)                           |
+| 11 | [License](#license)                               |
 
 <br>
 
@@ -584,6 +585,66 @@ print("Ensemble MAE:", mae(smoothed, targets, mask))
 <br>
 
 [↑ Back to top](#time-series-forecasting-pipeline)
+
+
+<br>
+
+---
+
+<br>
+
+## Citations
+
+If you find this work useful, please cite:
+
+```bibtex
+@misc{potosnak2026tsrepo,
+  title        = {Time Series Forecast Repo},
+  author       = {Potosnak, Willa and Dubrawski, Artur},
+  year         = {2026},
+  howpublished = {\url{https://github.com/your-org/your-repo}}
+}
+```
+
+```bibtex
+@article{potosnak2026forking,
+  title        = {Forking-Sequences},
+  author       = {Potosnak, Willa and Wolff, Malcolm and Cao, Mengfei and Ma, Ruijun and
+                  Konstantinova, Tatiana and Efimov, Dmitry and Mahoney, Michael W. and
+                  Oreshkin, Boris and Olivares, Kin G.},
+  year         = {2025},
+}
+```
+
+Our repo was inspired by the following open-source projects, whose foundational contributions to the community have shaped the landscape of forecasting benchmarking, development, and follow-on repos like this one.
+
+```bibtex
+@misc{olivares2022library_neuralforecast,
+    author={Kin G. Olivares and
+            Cristian Challú and
+            Azul Garza and
+            Max Mergenthaler Canseco and
+            Artur Dubrawski},
+    title = {{NeuralForecast}: User friendly state-of-the-art neural forecasting models.},
+    year={2022},
+    howpublished={{PyCon} Salt Lake City, Utah, US 2022},
+    url={https://github.com/Nixtla/neuralforecast}
+}
+```
+
+
+```bibtex
+@inproceedings{goswami2024moment,
+  title={MOMENT: A Family of Open Time-series Foundation Models},
+  author={Mononito Goswami and Konrad Szafer and Arjun Choudhry and Yifu Cai and Shuo Li and Artur Dubrawski},
+  booktitle={International Conference on Machine Learning},
+  year={2024}
+}
+```
+
+
+[↑ Back to top](#time-series-forecasting-pipeline)
+
 
 <br>
 

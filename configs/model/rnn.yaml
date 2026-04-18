@@ -8,6 +8,8 @@ output_layer: linear_proj
 context_len: -1 #512
 hidden_size: 256
 n_layers: 4
+patch_len: 1           
+stride: 1 
 
 # Regularization
 dropout: 0.1

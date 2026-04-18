@@ -3,7 +3,7 @@ from torch import nn
 import torch
 
 from common._base_model import BaseModel
-from common._modules import RevIN, Patching, PositionalEncoding, _make_causal_token_mask
+from common._modules import Patching, PositionalEncoding, _make_causal_token_mask
 from encoders._base_encoder import BaseEncoder
 from decoders._base_decoder import BaseDecoder
 from output_layers._base_output_layer import BaseOutputLayer
@@ -136,13 +136,6 @@ class Transformer(BaseModel):
         config.c_out = self.loss_fn.outputsize_multiplier
 
         self.fcd_samples = config.fcd_samples
-
-        self.revin = config.revin
-        if config.revin:
-            self.revin_layer = RevIN(
-                affine = config.revin_affine,
-                subtract_last = config.revin_subtract_last,
-            )
 
         self.model = Model(config=config)
 

@@ -10,7 +10,7 @@ import torch.multiprocessing as mp
 from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from dataloaders._ts_dataloader import DataLoaderFactory
+from dataloaders.factory import DataLoaderFactory
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,9 +20,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Single-process training
-# ─────────────────────────────────────────────────────────────────────────────
 
 def train(
     model,
@@ -281,9 +278,6 @@ def train_distributed(
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Test evaluation — always single GPU
-# ─────────────────────────────────────────────────────────────────────────────
 
 def eval_test(
     model,

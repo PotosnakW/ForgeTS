@@ -54,7 +54,7 @@ def _unfold_windows(src: Tensor, size: int, step: int) -> Tensor:
     return unfolded.permute(*order).contiguous()   # [B, n_fcds, size, C, *extra]
 
 
-def n_valid_fcds(T: int, context_len: int, horizon: int, step_size: int) -> int:
+def n_valid_fcds(T: int, context_len: int, horizon: int, stride: int) -> int:
     """
     How many complete FCD windows fit in a series of length T.
 
@@ -73,7 +73,7 @@ def n_valid_fcds(T: int, context_len: int, horizon: int, step_size: int) -> int:
     window_size = context_len + horizon
     if T < window_size:
         return 0
-    return (T - window_size) // step_size + 1
+    return (T - window_size) // stride + 1
 
 
 class ForkingSequences:
@@ -83,7 +83,7 @@ class ForkingSequences:
     Parameters
     ----------
     context_len : int
-    step_size      : int
+    stride      : int
     fcd_sampler    : str    'heterogeneous' (default) | 'homogeneous'
 
     fcd_samples != -1  (training)
@@ -119,7 +119,7 @@ class ForkingSequences:
         self,
         context_len: int,
         fcd_samples: int = -1,
-        step_size: int = 1,
+        stride: int = 1,
         fcd_sampler: str = "heterogeneous",
     ):
         if fcd_sampler not in self.SAMPLERS:
@@ -127,7 +127,7 @@ class ForkingSequences:
                 f"fcd_sampler must be one of {self.SAMPLERS}, got '{fcd_sampler}'"
             )
         self.context_len = context_len
-        self.step_size = step_size
+        self.stride = stride
         self.fcd_sampler = (
             self._heterogeneous_sampler
             if fcd_sampler == "heterogeneous"
@@ -152,7 +152,7 @@ class ForkingSequences:
         B, S, _ = available_mask.shape
         L, H    = self.context_len, horizon
 
-        block_len = L + (fcd_samples - 1) * self.step_size + H
+        block_len = L + (fcd_samples - 1) * self.stride + H
         max_start = S - block_len
         if max_start < 0:
             raise ValueError(
@@ -210,13 +210,13 @@ class ForkingSequences:
         B, S, C = available_mask.shape
         L, H    = self.context_len, horizon
 
-        block_len = L + (fcd_samples - 1) * self.step_size + H
+        block_len = L + (fcd_samples - 1) * self.stride + H
         max_start = S - block_len
 
         if max_start < 0:
             raise ValueError(
                 f"Series length {S} is too short for context_len={L} + "
-                f"fcd_samples={fcd_samples} * step_size={self.step_size} + horizon={H} "
+                f"fcd_samples={fcd_samples} * stride={self.stride} + horizon={H} "
                 f"= block_len={block_len}. Reduce context_len or fcd_samples."
             )
 
@@ -302,7 +302,7 @@ class ForkingSequences:
         mask_block  = available_mask
         loss_mask_block = loss_mask
         window_size = self.context_len + horizon
-        valid_fcds = (T - self.context_len - horizon) // self.step_size + 1
+        valid_fcds = (T - self.context_len - horizon) // self.stride + 1
 
         return enc_block, mask_block, loss_mask_block, window_size, valid_fcds
 
@@ -318,7 +318,7 @@ class ForkingSequences:
         Must use the homogeneous sampler — without a fixed context_len, a per-series
         anchor would produce different window sizes across the batch, breaking the
         tensor shape assumption. The homogeneous sampler enforces a single shared
-        anchor so window_size = block_end - (fcd_samples-1)*step_size is consistent
+        anchor so window_size = block_end - (fcd_samples-1)*stride is consistent
         across all series in the batch.
         """
         
@@ -329,7 +329,7 @@ class ForkingSequences:
 
         B, T, C, _ = x_enc_full.shape
 
-        block_len = (fcd_samples - 1) * self.step_size + horizon
+        block_len = (fcd_samples - 1) * self.stride + horizon
         window_start, _ = self._homogeneous_sampler(
             available_mask=available_mask, 
             fcd_samples=fcd_samples, 
@@ -340,7 +340,7 @@ class ForkingSequences:
         enc_block = x_enc_full[:, :block_end]
         mask_block = available_mask[:, :block_end]
         loss_mask_block = loss_mask[:, :block_end]
-        window_size = block_end - (fcd_samples - 1) * self.step_size
+        window_size = block_end - (fcd_samples - 1) * self.stride
 
         return enc_block, mask_block, loss_mask_block, window_size, fcd_samples
 
@@ -369,7 +369,7 @@ class ForkingSequences:
         mask_block  = available_mask
         loss_mask_block = loss_mask
         window_size = 1 + horizon
-        valid_fcds = (T - horizon) // self.step_size
+        valid_fcds = (T - horizon) // self.stride
 
         return enc_block, mask_block, loss_mask_block, window_size, valid_fcds
 
@@ -386,8 +386,8 @@ class ForkingSequences:
             fcd_samples=fcd_samples,
         )
 
-        enc_windows  = _unfold_windows(src=enc_block,  size=window_size, step=self.step_size)
-        loss_mask_windows = _unfold_windows(src=loss_mask_block, size=window_size, step=self.step_size)
+        enc_windows  = _unfold_windows(src=enc_block,  size=window_size, step=self.stride)
+        loss_mask_windows = _unfold_windows(src=loss_mask_block, size=window_size, step=self.stride)
 
         eff_L = window_size - horizon
         outsample_mask = loss_mask_windows[:, :, eff_L:, :]

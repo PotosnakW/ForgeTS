@@ -2,14 +2,14 @@ import torch
 import torch.nn as nn
 
 
-def _identity(x, stats, step_size, norm_type, **kwargs):
+def _identity(x, stats, stride, norm_type, **kwargs):
     return x
 
 
-def _standardize(x, stats, step_size, norm_type, **kwargs):
+def _standardize(x, stats, stride, norm_type, **kwargs):
     """
     norm:   x is (B, T, C), stats are (B, T, C) — applied elementwise
-    denorm: x is (B, H, C), uses last H*step_size stats strided by step_size
+    denorm: x is (B, H, C), uses last H*stride stats strided by stride
     """
     mean  = stats['mean']
     stdev = stats['stdev']
@@ -25,25 +25,24 @@ def _standardize(x, stats, step_size, norm_type, **kwargs):
         return x
 
     elif norm_type == 'denorm':
-        H = x.shape[2]
-        fcd_mean = mean[:, -H*step_size::step_size, :, 0:1].unsqueeze(2)  # (B, T, 1, C, 1)
-        fcd_stdev = stdev[:, -H*step_size::step_size, :, 0:1].unsqueeze(2) # (B, T, 1, C, 1)
+        T = x.shape[1]
+        fcd_mean  = mean[:, -T*stride::stride, :, 0:1].unsqueeze(2)   # (B, T, 1, C, 1)
+        fcd_stdev = stdev[:, -T*stride::stride, :, 0:1].unsqueeze(2)  # (B, T, 1, C, 1)
         if affine_weight is not None:
             x = (x - affine_bias) / (affine_weight + eps ** 2)
-        return x * fcd_stdev + fcd_mean                     # broadcasts over (B, T, H, C, Q)
+        return x * fcd_stdev + fcd_mean                                        # (B, T, H, C, Q)
 
     else:
         raise NotImplementedError(f"norm_type must be 'norm' or 'denorm', got '{norm_type}'")
     
 
 class Scaler(nn.Module):
-    def __init__(self, scaler_type, step_size, eps=1e-5):
+    def __init__(self, scaler_type, stride, eps=1e-5):
         super().__init__()
         self.eps = eps
         self.scaler_type = scaler_type
-        self.step_size = step_size
-        
-
+        self.stride = stride
+    
         if scaler_type == 'revin':
             self.affine_weight = nn.Parameter(torch.ones(1))
             self.affine_bias = nn.Parameter(torch.zeros(1))
@@ -87,7 +86,7 @@ class Scaler(nn.Module):
         x_scaled = self.scaler(
             x=x,
             stats=self.stats,
-            step_size=self.step_size,
+            stride=self.stride,
             norm_type=norm_type,
             affine_weight=self.affine_weight,
             affine_bias=self.affine_bias,

@@ -8,7 +8,8 @@ output_layer: linear_proj
 hidden_size: 256
 dilations: [1, 2, 4, 8, 16] 
 in_channels: 1  # CI: always 1 (series fed in one at a time)
-kernel_size: 3                 
+kernel_size: 3      
+patch_len: 1           
 stride: 1 
 
 # Regularization

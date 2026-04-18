@@ -16,6 +16,7 @@ from tqdm import tqdm
 from ._utils import CheckpointManager, EarlyStopper
 from dataloaders._forking_sequences import ForkingSequences
 from metrics.torch_losses import get_loss
+from scalers.torch_scalers import Scaler
 
 logger = logging.getLogger(__name__)
 
@@ -62,18 +63,24 @@ class BaseModel(nn.Module):
         self._training_ready = False
         self._rank = 0
         self._world_size = 1
+
+        self.scaler = Scaler(
+            scaler_type=config.scaler_type,
+            stride=config.stride,
+            eps=1e-5
+        )
         
         self.fcd_samples = config.fcd_samples
         self._fork_sequences_train = ForkingSequences(
             context_len = config.context_len,
             fcd_samples = config.fcd_samples,
-            step_size = 1,
+            stride = 1,
             fcd_sampler = config.fcd_sampler,
         )
         self._fork_sequences_eval = ForkingSequences(
             context_len = config.context_len,
             fcd_samples = -1,
-            step_size = 1,
+            stride = 1,
         )
 
         loss_fn = get_loss(config.loss)
@@ -93,10 +100,10 @@ class BaseModel(nn.Module):
         outsample_mask : [B, T, H, C]  1=real timestep+channel, 0=padded/missing
         """
         y = batch["outsample_y"]
+        preds = batch["preds"]
         B, T, H, C = y.shape
 
         y = y.reshape(B * T, H, C)
-        preds = batch["preds"]
         preds = preds.reshape(B * T, H, C, -1)
 
         outsample_mask = batch.get("outsample_mask")
@@ -264,7 +271,7 @@ class BaseModel(nn.Module):
         results = {}
         for raw_batch in tqdm(loader, desc="Predicting"):
             step          = self.predict_step(raw_batch)
-            pred          = step["pred"]
+            pred          = step["preds"]
             targets       = step["targets"]
             outsample_mask = step["outsample_mask"]
 

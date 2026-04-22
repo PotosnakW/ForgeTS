@@ -1,3 +1,5 @@
+<a name="top"></a>
+
 <p align="center">
   <img src="figures/ForgeTS_logo.jpg" width="250"/>
   </p>
@@ -84,7 +86,7 @@ python train_models.py dataset=simglucose model=tstmomentmica
 
 <br>
 
-[↑ Back to top](#time-series-forecasting-pipeline)
+[↑ Back to top](#top)
 
 <br>
 
@@ -134,7 +136,7 @@ output_layer: linear_proj  # or none
 
 <br>
 
-[↑ Back to top](#time-series-forecasting-pipeline)
+[↑ Back to top](#top)
 
 <br>
 
@@ -179,7 +181,7 @@ Groups datasets by `(horizon, is_multivariate)` so all items in a batch share th
 
 <br>
 
-[↑ Back to top](#time-series-forecasting-pipeline)
+[↑ Back to top](#top)
 
 <br>
 
@@ -264,7 +266,7 @@ series 3   [0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1]
 
 <br>
 
-[↑ Back to top](#time-series-forecasting-pipeline)
+[↑ Back to top](#top)
 
 <br>
 
@@ -355,7 +357,7 @@ First write the shards with `write_sharded_dataset`, then point your dataset con
 
 <br>
 
-[↑ Back to top](#time-series-forecasting-pipeline)
+[↑ Back to top](#top)
 
 <br>
 
@@ -478,7 +480,7 @@ sfpc = forecast_percentage_change(
 
 <br>
 
-[↑ Back to top](#time-series-forecasting-pipeline)
+[↑ Back to top](#top)
 
 <br>
 
@@ -500,7 +502,7 @@ Controlled by `mcfg.val_strategy`:
 
 <br>
 
-[↑ Back to top](#time-series-forecasting-pipeline)
+[↑ Back to top](#top)
 
 <br>
 
@@ -530,7 +532,7 @@ Returns a nested dict keyed by dataset name:
 
 <br>
 
-[↑ Back to top](#time-series-forecasting-pipeline)
+[↑ Back to top](#top)
 
 <br>
  
@@ -596,7 +598,7 @@ print("Ensemble MAE:", mae(smoothed, targets, mask))
 
 <br>
 
-[↑ Back to top](#time-series-forecasting-pipeline)
+[↑ Back to top](#top)
 
 
 <br>
@@ -655,7 +657,7 @@ Our repo was inspired by the following open-source projects, whose foundational 
 ```
 
 
-[↑ Back to top](#time-series-forecasting-pipeline)
+[↑ Back to top](#top)
 
 
 <br>
@@ -680,4 +682,4 @@ See [MIT LICENSE](https://github.com/mononitogoswami/labelerrors/blob/main/LICEN
 
 <br>
 
-[↑ Back to top](#time-series-forecasting-pipeline)
+[↑ Back to top](#top)

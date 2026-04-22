@@ -1,6 +1,7 @@
 # General
 model_type: cnn
 tokenizer: none
+input_layer: none
 encoder: cnn
 decoder: none
 output_layer: linear_proj

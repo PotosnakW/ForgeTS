@@ -5,6 +5,7 @@ import torch
 from ..common._base_model import BaseModel
 from ..common._modules import PositionalEncoding, _make_causal_token_mask
 from ..tokenizers._base_tokenizer import BaseTokenizer
+from ..input_layers._base_input_layer import BaseInputLayer
 from ..encoders._base_encoder import BaseEncoder
 from ..decoders._base_decoder import BaseDecoder
 from ..output_layers._base_output_layer import BaseOutputLayer
@@ -21,15 +22,8 @@ class Model(nn.Module):
         self.patch_num = patch_num
         config.nf = config.hidden_size * patch_num
 
-        self.W_P = nn.Linear(config.patch_len, config.hidden_size)
-        self.W_pos = PositionalEncoding(
-            pe_type = config.pe_type,
-            hidden_size = config.hidden_size,
-            learn_pe = config.learn_pe,
-        )
-        self.dropout = nn.Dropout(config.dropout)
-
         self.tokenizer = BaseTokenizer().get_tokenizer(config=config)
+        self.input_layer = BaseInputLayer().get_input_layer(config=config)
         self.encoder = BaseEncoder().get_encoder(config=config)
         self.decoder = BaseDecoder().get_decoder(config=config)
         self.output_layer = BaseOutputLayer().get_output_layer(config=config)
@@ -69,13 +63,15 @@ class Model(nn.Module):
         attention_mask = _make_causal_token_mask(key_padding_mask=key_padding_mask, device=x_enc.device) # [B, C, 1, n_patch, n_patch]
         attention_mask = attention_mask.reshape(batch_size * n_channels, 1, patch_num_inp, patch_num_inp) # [B * C, 1, n_patch, n_patch]
 
-        x_enc  = self.tokenizer(x=x_enc)          # [B, C, n_patch, patch_len]
-        x_enc  = self.W_P(x_enc)                  # [B, C, n_patch, d_model]
-        x_enc += self.W_pos(x_enc)                # [B, C, n_patch, d_model]
+        print(f"before toeknize: {x_enc.shape=}")
+        x_enc = self.tokenizer(x=x_enc) # [B, C, n_patch, patch_len]
+        print(f"after tokenize: {x_enc.shape=}")
+        x_enc = self.input_layer(x=x_enc) # [B, C, n_patch, d_model]
+        print(f"after input layer: {x_enc.shape=}")
+
         x_enc  = x_enc.reshape(
             batch_size * n_channels, patch_num_inp, self.hidden_size
         )
-        x_enc  = self.dropout(x_enc)
 
         outputs = self.encoder(
             n_channels = n_channels,

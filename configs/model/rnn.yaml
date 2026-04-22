@@ -1,5 +1,7 @@
 # General
 model_type: rnn
+tokenizer: none
+input_layer: linear_proj
 encoder: rnn 
 decoder: none
 output_layer: linear_proj

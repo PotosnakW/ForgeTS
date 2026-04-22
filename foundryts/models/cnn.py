@@ -4,6 +4,7 @@ import torch
 
 from ..common._base_model import BaseModel
 from ..tokenizers._base_tokenizer import BaseTokenizer
+from ..input_layers._base_input_layer import BaseInputLayer
 from ..encoders._base_encoder import BaseEncoder
 from ..decoders._base_decoder import BaseDecoder
 from ..output_layers._base_output_layer import BaseOutputLayer
@@ -16,16 +17,17 @@ class Model(nn.Module):
         self.hidden_size = config.hidden_size
         config.nf = config.hidden_size
 
-        self.W_P = nn.Linear(1, config.hidden_size)
-        self.dropout = nn.Dropout(config.dropout)
-
         self.tokenizer = BaseTokenizer().get_tokenizer(config=config)
+        self.input_layer = BaseInputLayer().get_input_layer(config=config)
         self.encoder = BaseEncoder().get_encoder(config=config)
         self.decoder = BaseDecoder().get_decoder(config=config)
         self.output_layer = BaseOutputLayer().get_output_layer(config=config)
     
     def forward(self, x_enc, fcd_samples, available_mask=None, **kwargs):
         batch_size, n_channels, seq_len = x_enc.shape
+
+        x_enc = self.tokenizer(x=x_enc)
+        x_enc = self.input_layer(x=x_enc) 
 
         x_enc = x_enc.reshape(batch_size * n_channels, seq_len, 1) # [B*C, seq_len, 1]
         x_enc = x_enc.permute(0, 2, 1) # [B*C, 1, seq_len]

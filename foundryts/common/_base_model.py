@@ -14,9 +14,9 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from ._utils import CheckpointManager, EarlyStopper
-from dataloaders._forking_sequences import ForkingSequences
-from metrics.torch_losses import get_loss
-from scalers.torch_scalers import Scaler
+from ..dataloaders._forking_sequences import ForkingSequences
+from ..metrics.torch_losses import get_loss
+from ..scalers.torch_scalers import Scaler
 
 logger = logging.getLogger(__name__)
 

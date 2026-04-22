@@ -1,5 +1,5 @@
 import logging
-from common._modules import IdentityLayer
+from ..common._modules import IdentityLayer
 
 
 class BaseEncoder:
@@ -8,7 +8,7 @@ class BaseEncoder:
 
     def _get_huggingface_transformer(self, config):
         from transformers import T5Config
-        from encoders.t5_encoder import T5Model
+        from .t5_encoder import T5Model
 
         model_config = T5Config.from_pretrained(config.encoder)
         for attr in [
@@ -42,19 +42,19 @@ class BaseEncoder:
             return self._get_huggingface_transformer(config)
     
         elif config.encoder == "patchtst":
-            from encoders.tst_encoder import TSTEncoder
+            from .tst_encoder import TSTEncoder
             return TSTEncoder(config)
         
         elif config.encoder == "rnn":
-            from encoders.rnn_encoder import RNNEncoder
+            from .rnn_encoder import RNNEncoder
             return RNNEncoder(config)
     
         elif config.encoder == "lstm":
-            from encoders.lstm_encoder import LSTMEncoder
+            from .lstm_encoder import LSTMEncoder
             return LSTMEncoder(config)
         
         elif config.encoder == "cnn":
-            from encoders.cnn_encoder import CNNEncoder
+            from .cnn_encoder import CNNEncoder
             return CNNEncoder(config)
     
         else:

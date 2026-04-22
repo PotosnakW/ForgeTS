@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import math
 from typing import Optional
 
-from common._modules import MLP
+from ..common._modules import MLP
 
 class ScaledDotProductAttention(nn.Module):
     """

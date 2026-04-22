@@ -6,7 +6,7 @@ import math
 from transformers.cache_utils import Cache, DynamicCache, EncoderDecoderCache
 from transformers.models.t5.modeling_t5 import T5LayerNorm, T5Config
 
-from common._modules import MLP
+from ..common._modules import MLP
 
 
 class T5Attention(nn.Module): # Default T5Attention copied from HuggingFace for version control

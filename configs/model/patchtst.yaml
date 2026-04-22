@@ -1,5 +1,6 @@
 # General
 model_type: transformer
+tokenizer: fixed_patch
 encoder: patchtst 
 decoder: none
 output_layer: linear_proj   # not linear_projection

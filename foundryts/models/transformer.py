@@ -2,11 +2,12 @@ from types import SimpleNamespace
 from torch import nn
 import torch
 
-from common._base_model import BaseModel
-from common._modules import Patching, PositionalEncoding, _make_causal_token_mask
-from encoders._base_encoder import BaseEncoder
-from decoders._base_decoder import BaseDecoder
-from output_layers._base_output_layer import BaseOutputLayer
+from ..common._base_model import BaseModel
+from ..common._modules import PositionalEncoding, _make_causal_token_mask
+from ..tokenizers._base_tokenizer import BaseTokenizer
+from ..encoders._base_encoder import BaseEncoder
+from ..decoders._base_decoder import BaseDecoder
+from ..output_layers._base_output_layer import BaseOutputLayer
 
 
 class Model(nn.Module):
@@ -20,7 +21,6 @@ class Model(nn.Module):
         self.patch_num = patch_num
         config.nf = config.hidden_size * patch_num
 
-        self.tokenizer = Patching(patch_len=config.patch_len, stride=config.stride)
         self.W_P = nn.Linear(config.patch_len, config.hidden_size)
         self.W_pos = PositionalEncoding(
             pe_type = config.pe_type,
@@ -29,6 +29,7 @@ class Model(nn.Module):
         )
         self.dropout = nn.Dropout(config.dropout)
 
+        self.tokenizer = BaseTokenizer().get_tokenizer(config=config)
         self.encoder = BaseEncoder().get_encoder(config=config)
         self.decoder = BaseDecoder().get_decoder(config=config)
         self.output_layer = BaseOutputLayer().get_output_layer(config=config)

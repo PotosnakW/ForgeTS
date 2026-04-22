@@ -165,20 +165,6 @@ class PositionalEncoding(nn.Module):
         pe = self.W_pos[:seq_len]
         return pe.unsqueeze(0).unsqueeze(0) #[batch_size, n_channels, seq_len, d_model]
 
-class Patching(nn.Module):
-    def __init__(self, 
-                 patch_len : int, 
-                 stride : int):
-        super().__init__()
-        self.patch_len = patch_len
-        self.stride = stride
-
-    def forward(self, x):
-        x = x.unfold(dimension=-1, 
-                     size=self.patch_len, 
-                     step=self.stride)
-        # x : [batch_size x n_channels x num_patch x patch_len]
-        return x 
     
 class Transpose(nn.Module):
     """

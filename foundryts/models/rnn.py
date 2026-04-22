@@ -2,10 +2,11 @@ from types import SimpleNamespace
 from torch import nn
 import torch
 
-from common._base_model import BaseModel
-from encoders._base_encoder import BaseEncoder
-from decoders._base_decoder import BaseDecoder
-from output_layers._base_output_layer import BaseOutputLayer
+from ..common._base_model import BaseModel
+from ..tokenizers._base_tokenizer import BaseTokenizer
+from ..encoders._base_encoder import BaseEncoder
+from ..decoders._base_decoder import BaseDecoder
+from ..output_layers._base_output_layer import BaseOutputLayer
 
 
 class Model(nn.Module):
@@ -18,6 +19,7 @@ class Model(nn.Module):
         self.W_P = nn.Linear(1, config.hidden_size)
         self.dropout = nn.Dropout(config.dropout)
 
+        self.tokenizer = BaseTokenizer().get_tokenizer(config=config)
         self.encoder = BaseEncoder().get_encoder(config=config)
         self.decoder = BaseDecoder().get_decoder(config=config)
         self.output_layer = BaseOutputLayer().get_output_layer(config=config)
@@ -25,24 +27,22 @@ class Model(nn.Module):
     def forward(self, x_enc, fcd_samples, available_mask=None, **kwargs):
         batch_size, n_channels, seq_len = x_enc.shape
 
-        x_enc = x_enc.reshape(batch_size * n_channels, seq_len, 1) # [B*C, seq_len, 1]
-        x_enc = x_enc.permute(0, 2, 1) # [B*C, 1, seq_len]
-        
-        enc_out = self.encoder(x=x_enc, n_channels=n_channels) # [B*C, seq_len, hidden_size]
-        print(f"{enc_out.shape=}")
-       
+        x = x_enc.reshape(batch_size * n_channels, seq_len, 1)
+        x = self.W_P(x)                                          # [B*C, seq_len, hidden_size]
+        x = self.dropout(x)
+
+        enc_out = self.encoder(inputs_embeds=x, n_channels=n_channels) # [B*C, seq_len, hidden_size]
+    
         assert fcd_samples > 0, f"fcd_samples must be resolved before Model.forward, got {fcd_samples}"
         enc_out = enc_out[:, -fcd_samples:, :]
         enc_out = enc_out.unsqueeze(2)  # [B*C, fcd_samples, 1, hidden_size]
 
-        dec_out = self.decoder(enc_out)
+        dec_out = self.decoder(enc_out)                          # [B*C, T, 1, hidden_size]
         dec_out = dec_out.reshape(batch_size, n_channels, fcd_samples, 1, self.hidden_size)
-        output  = self.output_layer(dec_out)   # [B, C, seq_len, H*c_out]
-
+        output  = self.output_layer(dec_out)                     # [B, C, T, H*c_out]
         return output
 
-
-class CNN(BaseModel):
+class RNN(BaseModel):
     def __init__(self, config):
         super().__init__(config)
 
@@ -50,7 +50,7 @@ class CNN(BaseModel):
             config = SimpleNamespace(**config)
 
         config.c_out = self.loss_fn.outputsize_multiplier
-
+    
         self.model = Model(config=config)
 
     def forward(

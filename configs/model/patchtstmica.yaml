@@ -1,5 +1,6 @@
 # General
 model_type: transformer
+tokenizer: fixed_patch
 encoder: patchtst 
 decoder: none
 output_layer: linear_proj   # not linear_projection
@@ -33,7 +34,7 @@ store_attn: False
 
 # MICA variants
 mica_mixer_type: betas # betas, mlp, mlp_query
-mica_channel_weight_type: static #uniform # uniform, static, dynamic
+mica_channel_weight_type: uniform # uniform, static, dynamic
 mica_channel_exclusion: False
 layerwise_beta: False
 channelwise_beta: False

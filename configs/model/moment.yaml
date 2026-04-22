@@ -1,5 +1,6 @@
 # General
 model_type: transformer
+tokenizer: fixed_patch
 encoder: google/t5-efficient-tiny  # Transformer backbone to use, e.g., google/t5-efficient-tiny
 decoder: none
 output_layer: linear_proj   # not linear_projection

@@ -109,7 +109,7 @@ class DataLoaderFactory:
         return result
 
     def _build_train(self):
-        from dataloaders.ts_sharding import ShardedTrainDataset
+        from ..dataloaders.ts_sharding import ShardedTrainDataset
         for entry in self.dcfg.train:
             entry = _to_cfg(entry)
             is_multivariate = getattr(entry, "multivariate", False)
@@ -174,7 +174,7 @@ class DataLoaderFactory:
         ctx = ctx = getattr(self.mcfg, "context_len", -1)
 
         if getattr(entry, "sharded_dir", None):
-            from dataloaders.ts_sharding import ShardedValDataset
+            from ..dataloaders.ts_sharding import ShardedValDataset
             return ShardedValDataset(
                 data_dir    = entry.sharded_dir,
                 context_len = ctx,
@@ -222,7 +222,7 @@ class DataLoaderFactory:
         ctx = ctx = getattr(self.mcfg, "context_len", -1)
 
         if getattr(entry, "sharded_dir", None):
-            from dataloaders.ts_sharding import ShardedTestDataset
+            from ..dataloaders.ts_sharding import ShardedTestDataset
             return ShardedTestDataset(
                 data_dir    = entry.sharded_dir,
                 context_len = ctx,

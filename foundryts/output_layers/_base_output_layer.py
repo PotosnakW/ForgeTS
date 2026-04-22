@@ -1,4 +1,4 @@
-from common._modules import IdentityLayer
+from ..common._modules import IdentityLayer
 
 
 class BaseOutputLayer:
@@ -13,11 +13,11 @@ class BaseOutputLayer:
             return IdentityLayer()
         
         elif config.output_layer.lower() == 'linear_proj':
-            from output_layers.linear_proj import LinearProjectionLayer
+            from .linear_proj import LinearProjectionLayer
             return LinearProjectionLayer(config)
 
         elif config.output_layer.lower() == 'linear_proj_multivariate':
-            from output_layers.linear_proj import LinearProjectionLayerMultivariate
+            from .linear_proj import LinearProjectionLayerMultivariate
             return LinearProjectionLayerMultivariate(config)
 
         else:

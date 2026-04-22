@@ -457,9 +457,9 @@ from common.losses_np import excess_volatility, forecast_percentage_change
 Measures harmful forecast instability: revisions that incur a quantile-loss cost without a corresponding accuracy improvement.
 
 <div style="display: flex; gap: 10px;">
-  <img src="figures/zero-penalty__improving_revision.png" alt="grid" width="280"/>
-  <img src="figures/maximum-penalty__degrading_revision.png" alt="second" width="280"/>
-  <img src="figures/overshoot-revision_penalty.png" alt="second" width="280"/>
+  <img src="figures/zero-penalty__improving_revision.png" alt="grid" width="250"/>
+  <img src="figures/maximum-penalty__degrading_revision.png" alt="second" width="250"/>
+  <img src="figures/overshoot-revision_penalty.png" alt="second" width="250"/>
 </div>
 Fig. Example penalty behavior of the Excess Volatility (EV) metric. EV distinguishes accuracy-improving
 revisions from accuracy-degrading ones, assigning no penalty when revisions improve accuracy, while asymmetrically penalizing both deteriorating and overshooting revisions according to their impact on accuracy.
@@ -557,8 +557,8 @@ Because forking sequences produce multiple overlapping predictions for anygiven 
 variance before computing final metrics.
 
 <div style="display: flex; gap: 10px;">
-  <img src="figures/available_forecast.png" alt="grid" width="400"/>
-  <img src="figures/forecast_variance.png" alt="second" width="400"/>
+  <img src="figures/available_forecast.png" alt="grid" width="250"/>
+  <img src="figures/forecast_variance.png" alt="second" width="250"/>
 </div>
 Fig. a) We adapt forking-sequences during inference to ensemble multiple forecasts of the same future date by
 computing a function (ex., moving average) across predictions generated from previous FCDs. b) Forking-sequences

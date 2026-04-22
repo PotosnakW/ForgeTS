@@ -1,4 +1,21 @@
-# Time Series Forecasting Pipeline
+<p align="center">
+  <img src="figures/FoundryTS_logo.jpg" width="250"/>
+  </p>
+
+
+<p align="center">
+  <em>Develop and Evaluate time-series forecasting architectures through controlled, component-level studies</em>
+</p>
+
+<br>
+
+---
+
+<br>
+
+![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+<img src="method.png" style="margin-top: -20px; clip-path: inset(100px 0 0 0);">
 
 <br>
 
@@ -10,17 +27,32 @@
 
 | | Section |
 |---|---|
-| 1  | [Quick Start](#quick-start)                       |
-| 2  | [Moduler Model Build](#moduler-model-build)       |
-| 3  | [Dataloaders](#dataloaders)                       |
-| 4  | [Forking-Sequences](#forking-sequences)           |
-| 5  | [Training](#training)                             |
-| 6  | [Validation Strategies](#validation-strategies)   |
-| 7  | [Metrics](#metrics)                               |
-| 8  | [Inference](#inference)                           |
-| 9  | [Forecast Ensembling](#forecast-ensembling)       |
-| 10 | [Citations](#citations)                           |
-| 11 | [License](#license)                               |
+| 1  | [Overview](#overview)                             |
+| 2  | [Quick Start](#quick-start)                       |
+| 3  | [Moduler Model Build](#moduler-model-build)       |
+| 4  | [Dataloaders](#dataloaders)                       |
+| 5  | [Forking-Sequences](#forking-sequences)           |
+| 6  | [Training](#training)                             |
+| 7  | [Validation Strategies](#validation-strategies)   |
+| 8  | [Metrics](#metrics)                               |
+| 9  | [Inference](#inference)                           |
+| 10 | [Forecast Ensembling](#forecast-ensembling)       |
+| 11 | [Citations](#citations)                           |
+| 12 | [License](#license)                               |
+
+<br>
+
+---
+
+<br>
+
+## Overview
+
+**Most forecasting repos benchmark at the model level. FoundryTS benchmarks at the component level.**
+
+<p align="center">
+  <img src="figures/FoundryTS_motivation.jpg" width="700"/>
+</p>
 
 <br>
 

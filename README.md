@@ -191,10 +191,6 @@ Groups datasets by `(horizon, is_multivariate)` so all items in a batch share th
 
 Forking-sequences architectures generate forecasts for all FCDs simultaneously by reusing the encoder’s computations, whereas window-sampling produces forecasts for each FCD independently. We include an implementation of `forking-sequences` from the methods described in [1, 2]. 
 
-1. Wen, R., Torkkola, K., Narayanaswamy, B., & Madeka, D. (2018). *A Multi-Horizon Quantile Recurrent Forecaster*.
-
-2. Potosnak, W., Wolff, M., Cao, M., Ma, R., Konstantinova, T., Efimov, D., Mahoney, M. W., Oreshkin, B., & Olivares, K. G. (2025). *Forking-Sequences*.
-
 <p align="center">
   <img src="figures/window_sampling.gif" width="400"/>
   <img src="figures/forking_sequences.gif" width="400"/>
@@ -204,13 +200,7 @@ Forking-sequences architectures generate forecasts for all FCDs simultaneously b
   <em>(a) Window-Sampling &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; (b) Forking-Sequences</em>
 </p>
 
-<p align="center">
-<img src="figures/fs_grid_diagram.png" alt="grid" width="400"/>
-</p>
 
-<p align="center">
-  (c) Forking-Sequences grid from [2]
-</p>
 
 
 The `fcd_sample` parameter in the `configs/base/default.yaml` file. It can alternatively be specified in individual model configs in `configs/models/`
@@ -267,6 +257,10 @@ series 3   [0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1]
                                   [──── L ────][── H ──]
 ──────────────────────────────────────────────────────────
 ```
+
+1. Wen, R., Torkkola, K., Narayanaswamy, B., & Madeka, D. (2018). *A Multi-Horizon Quantile Recurrent Forecaster*.
+
+2. Potosnak, W., Wolff, M., Cao, M., Ma, R., Konstantinova, T., Efimov, D., Mahoney, M. W., Oreshkin, B., & Olivares, K. G. (2025). *Forking-Sequences*.
 
 <br>
 

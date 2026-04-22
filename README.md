@@ -140,24 +140,17 @@ Each dataset is a single item (`__len__ == 1`) — the entire series delivered t
 
 <br>
 
-### `batch_sampler: BatchSampler`
-Weighted sampler with no horizon bucketing. Datasets are mixed into a single pool and sampled by weight. Use this when horizon consistency across batches is not required. Requires that `horizon_override` is defined in the model config if training across datasets with different forecast horizons. Univariate and multivariate data are pooled and batched separately so they are never mixed within a batch. Ensure `multivariate` flag is specified in the `configs/dataset` files.
 
-| `batch_mixing_strategy` | Behaviour |
-|---|---|
-| `concat` | All datasets in the bucket are pooled into a single index space. Per-dataset weights control sampling frequency. Series of different lengths are reconciled at collation via left-padding, so the model always receives a rectangular tensor. |
-| `round_robin` | Datasets are served one-at-a-time, rotating each round. Weights control the number of batches a dataset contributes per round rather than per-sample probability. |
-
-<br>
 
 ### `batch_sampler: HorizonBatchSampler`
 
-Groups datasets by horizon so all items in a batch share the same `H`. Required for autoregressive rollouts — each batch must have a consistent forecast length. Univariate and multivariate data are pooled and batched separately so they are never mixed within a batch. Ensure `multivariate` flag is specified in the `configs/dataset` files.
+Groups datasets by `(horizon, is_multivariate)` so all items in a batch share the same forecast length and data type. When `horizon_override` is set, all datasets collapse into a single group per multivariate flag, allowing free mixing across horizons. Univariate and multivariate datasets are always batched separately and never mixed within a batch. Ensure the `multivariate` flag is set correctly in each `source/{dataset}` config.
+
 
 | `batch_mixing_strategy` | Behaviour |
 |---|---|
-| `concat` | All datasets in the bucket are pooled into a single index space. Per-dataset weights control sampling frequency. Series of different lengths are reconciled at collation via left-padding, so the model always receives a rectangular tensor. |
-| `round_robin` | Datasets are served one-at-a-time, rotating each round. Weights control the number of batches a dataset contributes per round rather than per-sample probability. |
+| `concat` | All datasets in a horizon group are pooled into a single index space, weighted by dataset weight. The pool is shuffled and chunked into batches of `batch_size`. All datasets are seen per epoch but batch order is random. |
+| `round_robin` | Batches are yielded one horizon group at a time, cycling across groups before repeating. Within each group, datasets are still weighted and pooled. Guarantees each horizon group gets a batch before any group repeats. With a single horizon group, identical to `concat`. |
 
 <br>
 

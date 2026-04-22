@@ -5,6 +5,7 @@ import hydra
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 import yaml
+from pathlib import Path
 import pickle
 
 from models.transformer import Transformer
@@ -43,7 +44,10 @@ OmegaConf.register_new_resolver("load", _load_dataset_file)
 
 @hydra.main(config_path="../configs", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
-    # Merge base into model so model config has all training params too
+    experiment_name = cfg.get("experiment_name", "default")
+    output_dir = Path(f"outputs/{experiment_name}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     mcfg = OmegaConf.merge(
         OmegaConf.to_container(cfg.base,  resolve=True),
         OmegaConf.to_container(cfg.model, resolve=True),
@@ -51,6 +55,7 @@ def main(cfg: DictConfig) -> None:
     mcfg = OmegaConf.create(mcfg)
     mcfg.horizon_override = getattr(cfg.dataset, "horizon_override", None)
     mcfg.n_channels = getattr(cfg.dataset, "n_channels", None)
+    mcfg.checkpoint_dir = str(output_dir / "checkpoints")
     dcfg = OmegaConf.create(OmegaConf.to_container(cfg.dataset, resolve=True))
 
     if mcfg.horizon_override:
@@ -58,11 +63,10 @@ def main(cfg: DictConfig) -> None:
 
     factory = DataLoaderFactory(mcfg, dcfg)
     train_loader = factory.train_dataloader()
-    val_loaders = factory.val_dataloaders()
+    val_loaders  = factory.val_dataloaders()
+    model_cls    = get_model(mcfg.model_type)
+    model        = model_cls(mcfg)
 
-    model_cls = get_model(mcfg.model_type)
-    model = model_cls(mcfg)
-    
     train(
         model        = model,
         mcfg         = mcfg,
@@ -72,10 +76,10 @@ def main(cfg: DictConfig) -> None:
         seed         = cfg.base.seed,
         resume       = cfg.get("resume", None),
     )
-    results = eval_test(model, factory)
 
-    with open('/home/wpotosna/test_results.pkl', 'wb') as file:
-        pickle.dump(results, file)
+    results = eval_test(model, factory)
+    with open(output_dir / "preds.pkl", "wb") as f:
+        pickle.dump(results, f)
 
 
 if __name__ == "__main__":

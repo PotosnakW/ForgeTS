@@ -263,31 +263,28 @@ class BaseModel(nn.Module):
 
         results = {}
         for raw_batch in tqdm(loader, desc="Predicting"):
-            step          = self.predict_step(raw_batch)
-            pred          = step["preds"]
-            targets       = step["targets"]
+            step           = self.predict_step(raw_batch)
+            pred           = step["preds"]
+            targets        = step["targets"]
             outsample_mask = step["outsample_mask"]
+            dataset_names  = raw_batch.get("dataset_name", ["unknown"] * pred.shape[0])
+            channel_ids    = raw_batch.get("channel_ids",  [None]      * pred.shape[0])
 
-            dataset_names = raw_batch.get("dataset_name", ["unknown"] * targets.shape[0])
-            channel_ids   = raw_batch.get("channel_ids",  [None]      * targets.shape[0])
-
-            for b in range(targets.shape[0]):
-                name = dataset_names[b]
+            for b in range(pred.shape[0]):
+                name   = dataset_names[b]
+                n_real = len(channel_ids[b]) if channel_ids[b] is not None else pred.shape[3]
                 if name not in results:
-                    results[name] = {"channel_ids": channel_ids[b],
-                                    "preds": [], "targets": [], "outsample_mask": []}
-                results[name]["preds"].append(pred[b])
-                results[name]["targets"].append(targets[b])
+                    results[name] = {"channel_ids": channel_ids[b], "preds": [], "targets": [], "outsample_mask": []}
+                results[name]["preds"].append(pred[b, :, :, :n_real, :])
+                results[name]["targets"].append(targets[b, :, :, :n_real])
                 if outsample_mask is not None:
-                    results[name]["outsample_mask"].append(outsample_mask[b])
+                    results[name]["outsample_mask"].append(outsample_mask[b, :, :, :n_real])
 
         for name, d in results.items():
-            d["preds"]          = torch.cat(d["preds"],   dim=0)
-            d["targets"]        = torch.cat(d["targets"], dim=0)
-            d["outsample_mask"] = (
-                torch.cat(d["outsample_mask"], dim=0)
-                if d["outsample_mask"] else None
-            )
+            d["preds"]          = torch.cat(d["preds"],          dim=0)
+            d["targets"]        = torch.cat(d["targets"],        dim=0)
+            d["outsample_mask"] = torch.cat(d["outsample_mask"], dim=0) if d["outsample_mask"] else None
+
         return results
 
     def _log_val_metrics(self, val_metrics: Dict[str, Dict[str, float]]):

@@ -6,7 +6,7 @@ scaler_type: 'standard'
 
 # ── DataLoader ──────────────────────────────────────────
 batch_size: 4
-valid_batch_size: 1024
+valid_batch_size: 4
 num_workers: 4
 drop_last: false
 lazy_loading: true        # True: datasets loaded on-demand, max_cached_datasets held in RAM at once; False: all datasets loaded into RAM at startup

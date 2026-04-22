@@ -288,10 +288,7 @@ class DataLoaderFactory:
                 group_datasets[effective_key].append(ds)
                 group_weights[effective_key].append(weight)
                 all_datasets.append(ds)
-                flat_offset += len(ds)
-
-        print("effective_key:", effective_key)
-        print("group_key:", group_key)      
+                flat_offset += len(ds)   
 
         combined = ConcatDataset(all_datasets)
         sampler  = HorizonBatchSampler(
@@ -325,6 +322,7 @@ class DataLoaderFactory:
         )
 
     def _make_eval_dataloader(self, entries, split: str) -> DataLoader:
+        horizon_override = getattr(self.mcfg, "horizon_override", None)
         group_datasets: Dict[tuple, list] = defaultdict(list)
         group_weights:  Dict[tuple, list] = defaultdict(list)
         global_offsets: Dict[tuple, list] = defaultdict(list)
@@ -336,10 +334,11 @@ class DataLoaderFactory:
             ds = self._build_eval_dataset(entry, split)
             is_multivariate = getattr(entry, "multivariate", False)
             group_key = (entry.horizon, is_multivariate)
+            effective_key = ("override", is_multivariate) if horizon_override else group_key
 
-            global_offsets[group_key].append(flat_offset)
-            group_datasets[group_key].append(ds)
-            group_weights[group_key].append(entry.weight)
+            global_offsets[effective_key].append(flat_offset)
+            group_datasets[effective_key].append(ds)
+            group_weights[effective_key].append(entry.weight)
             all_datasets.append(ds)
             flat_offset += len(ds)
 

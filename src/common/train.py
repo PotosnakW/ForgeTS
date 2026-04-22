@@ -310,7 +310,9 @@ def eval_test(
     inner = getattr(model, "module", model)
     device = device or torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     test_loaders = factory.test_dataloaders()
-    loader = next(iter(test_loaders.values()))
-    results = inner.predict(loader, device=device)
-
+    
+    results = {}
+    for loader in test_loaders.values():
+        loader_results = inner.predict(loader, device=device)
+        results.update(loader_results)
     return results

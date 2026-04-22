@@ -307,12 +307,10 @@ def eval_test(
             "Do not call it inside a distributed worker."
         )
 
-    inner        = getattr(model, "module", model)
-    device       = device or torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    inner = getattr(model, "module", model)
+    device = device or torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     test_loaders = factory.test_dataloaders()
-    loader       = next(iter(test_loaders.values()))
-    results      = inner.predict(loader, device=device)
-    logger.info("Test results: %s",
-        {k: {kk: tuple(vv.shape) for kk, vv in v.items() if hasattr(vv, "shape")}
-        for k, v in results.items()})
+    loader = next(iter(test_loaders.values()))
+    results = inner.predict(loader, device=device)
+
     return results

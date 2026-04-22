@@ -1,4 +1,3 @@
-import warnings
 from collections import defaultdict
 from typing import Dict
 
@@ -17,7 +16,7 @@ from ._utils import (
     _pad_left,
 )
 from ._dataset import _make_dataset, LazyDataset, LazyDatasetCache
-from ._samplers import BatchSampler, HorizonBatchSampler
+from ._samplers import HorizonBatchSampler
 
 
 class DataLoaderFactory:
@@ -34,6 +33,7 @@ class DataLoaderFactory:
         self._dataset_cache = LazyDatasetCache(max_cached=max_cached) if self._lazy else None
 
         self._build_train()
+        self._validate_dataset_compatibility()
 
         seed = getattr(self.mcfg, "seed", 42)
         self._val_rng = np.random.default_rng(seed)
@@ -271,68 +271,41 @@ class DataLoaderFactory:
             is_multivariate=is_multivariate,
         )
 
+
     def _make_train_batch_sampler(self, rank=0, world_size=1):
-        all_datasets = []
-        flat_offset  = 0
+        horizon_override = getattr(self.mcfg, "horizon_override", None)
+        group_datasets   = defaultdict(list)
+        group_weights    = defaultdict(list)
+        global_offsets   = defaultdict(list)
+        all_datasets     = []
+        flat_offset      = 0
 
-        use_flat = getattr(self.mcfg, "batch_sampler", "HorizonBatchSampler") == "BatchSampler"
+        for group_key in sorted(self._horizon_groups.keys()):
+            horizon, is_multivariate = group_key
+            effective_key = ("override", is_multivariate) if horizon_override else group_key
+            for ds, weight, _ in self._horizon_groups[group_key]:
+                global_offsets[effective_key].append(flat_offset)
+                group_datasets[effective_key].append(ds)
+                group_weights[effective_key].append(weight)
+                all_datasets.append(ds)
+                flat_offset += len(ds)
 
-        if use_flat:
-            if not getattr(self.mcfg, "horizon_override", None):
-                warnings.warn(
-                    "batch_sampler='flat' is set without horizon_override — "
-                    "batches may contain mixed horizons with no fixed output size."
-                )
-            datasets       = []
-            global_offsets = []
+        print("effective_key:", effective_key)
+        print("group_key:", group_key)      
 
-            for group_key in sorted(self._horizon_groups.keys()):
-                _, is_multivariate = group_key
-                for ds, weight, _ in self._horizon_groups[group_key]:
-                    datasets.append((ds, weight, is_multivariate))
-                    global_offsets.append(flat_offset)
-                    all_datasets.append(ds)
-                    flat_offset += len(ds)
-
-            combined = ConcatDataset(all_datasets)
-            sampler  = BatchSampler(
-                datasets       = datasets,
-                global_offsets = global_offsets,
-                batch_size     = self.mcfg.batch_size,
-                shuffle        = True,
-                drop_last      = self.mcfg.drop_last,
-                seed           = getattr(self.mcfg, "seed", 0),
-                rank           = rank,
-                world_size     = world_size,
-            )
-
-        else:
-            group_datasets = defaultdict(list)
-            group_weights  = defaultdict(list)
-            global_offsets = defaultdict(list)
-
-            for group_key in sorted(self._horizon_groups.keys()):
-                for ds, weight, _ in self._horizon_groups[group_key]:
-                    global_offsets[group_key].append(flat_offset)
-                    group_datasets[group_key].append(ds)
-                    group_weights[group_key].append(weight)
-                    all_datasets.append(ds)
-                    flat_offset += len(ds)
-
-            combined = ConcatDataset(all_datasets)
-            sampler  = HorizonBatchSampler(
-                group_datasets        = group_datasets,
-                group_weights         = group_weights,
-                global_offsets        = global_offsets,
-                batch_size            = self.mcfg.batch_size,
-                batch_mixing_strategy = self.mcfg.batch_mixing_strategy,
-                shuffle               = True,
-                drop_last             = self.mcfg.drop_last,
-                seed                  = getattr(self.mcfg, "seed", 0),
-                rank                  = rank,
-                world_size            = world_size,
-            )
-
+        combined = ConcatDataset(all_datasets)
+        sampler  = HorizonBatchSampler(
+            group_datasets        = group_datasets,
+            group_weights         = group_weights,
+            global_offsets        = global_offsets,
+            batch_size            = self.mcfg.batch_size,
+            batch_mixing_strategy = self.mcfg.batch_mixing_strategy,
+            shuffle               = True,
+            drop_last             = self.mcfg.drop_last,
+            seed                  = getattr(self.mcfg, "seed", 0),
+            rank                  = rank,
+            world_size            = world_size,
+        )
         return combined, sampler
 
     def train_dataloader(self, distributed=False, rank=0, world_size=1) -> DataLoader:
@@ -436,3 +409,33 @@ class DataLoaderFactory:
                 persistent_workers = self.mcfg.num_workers > 0,
             )
         return loaders
+    
+    def _validate_dataset_compatibility(self):
+        all_horizons = set(horizon for horizon, _ in self._horizon_groups.keys())
+        horizon_override = getattr(self.mcfg, "horizon_override", None)
+        output_patch_len = getattr(self.mcfg, "output_patch_len", None)
+
+        names = [entry.name for entry in self.dcfg.train]
+        duplicates = {n for n in names if names.count(n) > 1}
+
+        if len(all_horizons) > 1:
+            if horizon_override:
+                # fine — all datasets collapsed into one group
+                pass
+            elif output_patch_len:
+                # fine — model rolls out K patches of output_patch_len to meet
+                # each dataset's horizon dynamically in forward pass
+                pass
+            else:
+                raise ValueError(
+                    f"Multiple horizons detected across datasets: {all_horizons}. "
+                    f"Either set horizon_override to fix a single horizon, "
+                    f"or set output_patch_len to enable dynamic horizon rollout "
+                    f"in the forward pass."
+                )
+            
+        if duplicates:
+            raise ValueError(
+                f"Duplicate dataset names found in train config: {duplicates}. "
+                f"Each dataset must have a unique name."
+            )

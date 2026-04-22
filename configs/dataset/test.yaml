@@ -1,0 +1,15 @@
+horizon_override: 12
+train:
+  - ${load:configs/dataset/sources/test1.yaml}
+  - ${load:configs/dataset/sources/test2.yaml}
+  - ${load:configs/dataset/sources/test3.yaml}
+
+validation:
+  - ${load:configs/dataset/sources/test1.yaml}
+  - ${load:configs/dataset/sources/test2.yaml}
+  - ${load:configs/dataset/sources/test3.yaml}
+
+test:
+  - ${load:configs/dataset/sources/test1.yaml}
+  - ${load:configs/dataset/sources/test2.yaml}
+  - ${load:configs/dataset/sources/test3.yaml}

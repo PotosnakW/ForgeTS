@@ -28,14 +28,15 @@ class Model(nn.Module):
         x_enc = x_enc.reshape(batch_size * n_channels, seq_len, 1) # [B*C, seq_len, 1]
         x_enc = x_enc.permute(0, 2, 1) # [B*C, 1, seq_len]
         
-        enc_out = self.encoder(x=x_enc, n_channels=n_channels)
+        enc_out = self.encoder(x=x_enc, n_channels=n_channels) # [B*C, seq_len, hidden_size]
+        print(f"{enc_out.shape=}")
        
         assert fcd_samples > 0, f"fcd_samples must be resolved before Model.forward, got {fcd_samples}"
         enc_out = enc_out[:, -fcd_samples:, :]
         enc_out = enc_out.unsqueeze(2)  # [B*C, fcd_samples, 1, hidden_size]
 
         dec_out = self.decoder(enc_out)
-        dec_out = dec_out.reshape(batch_size, n_channels, seq_len, 1, self.hidden_size)
+        dec_out = dec_out.reshape(batch_size, n_channels, fcd_samples, 1, self.hidden_size)
         output  = self.output_layer(dec_out)   # [B, C, seq_len, H*c_out]
 
         return output
@@ -59,7 +60,7 @@ class CNN(BaseModel):
 
         # TODO @wpotosna Extend for covariates
 
-        horizon = getattr(self.mcfg, "horizon_override", None) or int(batch["horizon"][0].item())
+        horizon = batch["horizon"]
 
         x = batch["insample_y"].clone() # [B, L+(T-1)*step_size, C, 1+Vh]
         input_mask = batch["available_mask"].clone()  # [B, L+(T-1)*step_size, C]

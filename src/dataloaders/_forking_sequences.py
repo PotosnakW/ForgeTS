@@ -146,9 +146,11 @@ class ForkingSequences:
     def _homogeneous_sampler(
         self,
         available_mask: Tensor,
+        channel_mask: Tensor,
         fcd_samples:    int,
         horizon:        int,
     ) -> Tuple[Tensor, int]:
+        
         B, S, _ = available_mask.shape
         L, H    = self.context_len, horizon
 
@@ -162,7 +164,15 @@ class ForkingSequences:
 
         # aggregate availability across batch and channels — only sample positions
         # where real data exists for ALL series and ALL channels
-        time_mask = available_mask.min(dim=2).values   # [B, S] min over channels
+        if channel_mask is not None:
+            # only consider real channels — set padded channels to 1 so min ignores them
+            padded = (channel_mask == 0).unsqueeze(1).expand_as(available_mask)
+            masked_avail = available_mask.clone()
+            masked_avail[padded] = 1
+            time_mask = masked_avail.min(dim=2).values   # [B, S]
+        else:
+            time_mask = available_mask.min(dim=2).values
+
         batch_mask = time_mask.min(dim=0).values       # [S]    min over batch
 
         sample_weights = batch_mask.float().clone()
@@ -180,6 +190,7 @@ class ForkingSequences:
     def _heterogeneous_sampler(
         self,
         available_mask: Tensor,
+        channel_mask: Tensor,
         fcd_samples: int,
         horizon: int,
     ) -> Tuple[Tensor, int]:
@@ -189,8 +200,8 @@ class ForkingSequences:
         Constraints on window_start[b]
         --------------------------------
         Valid positions are those where available_mask == 1 after collapsing
-        channels with min. A timestep is valid only if ALL channels have real
-        data there.
+        channels with min. A timestep is valid only if ALL [non-padded] channels 
+        have  real data there.
 
         window_start + block_len - 1 <= S - 1
         block_len already includes horizon, so no further subtraction needed.
@@ -219,14 +230,22 @@ class ForkingSequences:
                 f"fcd_samples={fcd_samples} * stride={self.stride} + horizon={H} "
                 f"= block_len={block_len}. Reduce context_len or fcd_samples."
             )
+        
+        if channel_mask is not None:
+            # only consider real channels — set padded channels to 1 so min ignores them
+            padded = (channel_mask == 0).unsqueeze(1).expand_as(available_mask)
+            masked_avail = available_mask.clone()
+            masked_avail[padded] = 1
+            time_mask = masked_avail.min(dim=2).values   # [B, S]
+        else:
+            time_mask = available_mask.min(dim=2).values
 
-        time_mask = available_mask.min(dim=2).values   # [B, S]
-        sample_weights = time_mask.clone()
+        sample_weights = time_mask.float().clone()
         sample_weights[:, max_start + 1:] = 0.0
 
         window_start = torch.multinomial(
             sample_weights, num_samples=1
-        ).squeeze(1) # [B]
+        ).squeeze(1)
         return window_start, block_len
     
     def _sampled_fcds_fixed_context(
@@ -246,6 +265,7 @@ class ForkingSequences:
 
         x_enc_full = batch["x_enc"]
         available_mask = batch["available_mask"]
+        channel_mask = batch["channel_mask"]
         loss_mask = batch["loss_mask"]
         #hist_mask = batch.get("hist_mask")
 
@@ -253,6 +273,7 @@ class ForkingSequences:
         
         window_start, block_len = self.fcd_sampler(
             available_mask=available_mask, 
+            channel_mask=channel_mask, 
             fcd_samples=fcd_samples,
             horizon=horizon,
         )
@@ -324,6 +345,7 @@ class ForkingSequences:
         
         x_enc_full = batch["x_enc"]
         available_mask = batch["available_mask"]
+        channel_mask = batch["channel_mask"]
         loss_mask = batch["loss_mask"]
         #hist_mask = batch.get("hist_mask")
 
@@ -332,6 +354,7 @@ class ForkingSequences:
         block_len = (fcd_samples - 1) * self.stride + horizon
         window_start, _ = self._homogeneous_sampler(
             available_mask=available_mask, 
+            channel_mask=channel_mask,
             fcd_samples=fcd_samples, 
             horizon=horizon,
         )
@@ -398,7 +421,8 @@ class ForkingSequences:
             outsample_y = enc_windows[:, :, eff_L:, :, 0],
             outsample_mask = outsample_mask,
             available_mask = mask_block[:, :enc_size],
-            fcd_samples = valid_fcds
+            fcd_samples = valid_fcds,
+            horizon = horizon,
         )
         # if hist_mask is not None:
         #     out["hist_mask"] = hist_mask

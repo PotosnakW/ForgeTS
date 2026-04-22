@@ -58,7 +58,7 @@ class RNN(BaseModel):
 
         # TODO @wpotosna Extend for covariates
 
-        horizon = getattr(self.mcfg, "horizon_override", None) or int(batch["horizon"][0].item())
+        horizon = batch["horizon"]
 
         x = batch["insample_y"].clone() # [B, L+(T-1)*step_size, C, 1+Vh]
         input_mask = batch["available_mask"].clone()  # [B, L+(T-1)*step_size, C]

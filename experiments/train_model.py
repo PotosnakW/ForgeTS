@@ -5,6 +5,7 @@ import hydra
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 import yaml
+import pickle
 
 from models.transformer import Transformer
 from models.rnn import RNN
@@ -50,8 +51,10 @@ def main(cfg: DictConfig) -> None:
     mcfg = OmegaConf.create(mcfg)
     mcfg.horizon_override = getattr(cfg.dataset, "horizon_override", None)
     mcfg.n_channels = getattr(cfg.dataset, "n_channels", None)
-    mcfg.horizon = mcfg.horizon_override  # None = dynamic, int = fixed
     dcfg = OmegaConf.create(OmegaConf.to_container(cfg.dataset, resolve=True))
+
+    if mcfg.horizon_override:
+        mcfg.horizon = mcfg.horizon_override
 
     factory = DataLoaderFactory(mcfg, dcfg)
     train_loader = factory.train_dataloader()
@@ -69,7 +72,10 @@ def main(cfg: DictConfig) -> None:
         seed         = cfg.base.seed,
         resume       = cfg.get("resume", None),
     )
-    eval_test(model, factory)
+    results = eval_test(model, factory)
+
+    with open('/home/wpotosna/test_results.pkl', 'wb') as file:
+        pickle.dump(results, file)
 
 
 if __name__ == "__main__":

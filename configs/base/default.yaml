@@ -5,13 +5,13 @@ seed: 1
 scaler_type: 'standard'
 
 # ── DataLoader ──────────────────────────────────────────
-batch_size: 32
+batch_size: 4
 valid_batch_size: 1024
 num_workers: 4
 drop_last: false
 lazy_loading: true        # True: datasets loaded on-demand, max_cached_datasets held in RAM at once; False: all datasets loaded into RAM at startup
 max_cached_datasets: 10   # (lazy_loading=True only) max datasets held in memory simultaneously; LRU eviction when exceeded
-batch_sampler: HorizonBatchSampler # Options: BatchSampler, HorizonBatchSampler
+batch_sampler: HorizonBatchSampler 
 batch_mixing_strategy: concat # Options: concat, round_robin
 val_strategy: "exhaustive"  # full pass every val check (default)
                             # val_strategy: "random_datasets"   # option A — K random datasets per val check

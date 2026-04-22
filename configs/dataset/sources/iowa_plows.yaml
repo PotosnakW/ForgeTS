@@ -1,0 +1,10 @@
+path: "/home/wpotosna/neuralforecast/mica/datasets/preprocessed_iowa_plows_dataset.csv"
+name: "iowa_plows"
+horizon: 24
+val_size: 500 #3744 #13 days (10% of data)
+test_size: 500 #3744 #13 days (10% of data)
+weight: 1.0
+hist_exog_cols: []
+futr_exog_cols: []
+stat_exog_cols: []
+multivariate: False #True

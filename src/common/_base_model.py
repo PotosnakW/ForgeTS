@@ -171,28 +171,21 @@ class BaseModel(nn.Module):
             for k, v in batch.items()
         }
 
-    def _prepare_batch(self, raw_batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
-        """
-        For full_series mode: runs forking-sequences to convert the raw padded
-        series into model-ready windows.
 
-        self.training controls fcd_samples:
-            True  (train_step called self.train())  → mcfg.fcd_samples
-                  Random anchor sampling via heterogeneous_sampler.
-            False (val_step called self.eval())     → -1
-                  Full series passed to _unfold_windows; every valid FCD
-                  window is produced with no random sampling.
-        """
+    def _prepare_batch(self, raw_batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
         raw_batch = self._to_device(raw_batch)
-        horizon = int(raw_batch["horizon"][0].item())
+        horizon_override = getattr(self.mcfg, "horizon_override", None)
+        horizon = int(horizon_override) if horizon_override else int(raw_batch["horizon"][0].item())
         if self.training:
-            fcd_samples = self._get_fcd_samples()  # @ WP TODO: curriculum learning
+            fcd_samples = self._get_fcd_samples()
             return self._fork_sequences_train(raw_batch, horizon, fcd_samples=fcd_samples)
         return self._fork_sequences_eval(raw_batch, horizon)
+
 
     def _get_fcd_samples(self):
         self._assert_training_ready()
         return self.fcd_samples # @ WP TODO: curriculum learning
+
 
     def train_step(self, raw_batch: Dict[str, Tensor]) -> float:
         self._assert_training_ready()

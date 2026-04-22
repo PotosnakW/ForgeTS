@@ -8,11 +8,11 @@ import yaml
 from pathlib import Path
 import pickle
 
-from foundryts.models.transformer import Transformer
-from foundryts.models.rnn import RNN
-from foundryts.models.cnn import CNN
-from foundryts.dataloaders.factory import DataLoaderFactory
-from foundryts.common.train import train, eval_test
+from forgets.models.transformer import Transformer
+from forgets.models.rnn import RNN
+from forgets.models.cnn import CNN
+from forgets.dataloaders.factory import DataLoaderFactory
+from forgets.common.train import train, eval_test
 
 logging.basicConfig(
     level=logging.INFO,

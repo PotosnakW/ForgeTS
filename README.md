@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="figures/FoundryTS_logo.jpg" width="250"/>
+  <img src="figures/ForgeTS_logo.jpg" width="250"/>
   </p>
 
 
@@ -44,7 +44,7 @@
 **Most forecasting repos benchmark at the model level. FoundryTS benchmarks at the component level.**
 
 <p align="center">
-  <img src="figures/FoundryTS_motivation.jpg" width="700"/>
+  <img src="figures/ForgeTS_motivation.png" width="700"/>
 </p>
 
 <br>

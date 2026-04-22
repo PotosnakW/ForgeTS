@@ -17,28 +17,21 @@
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 <img src="method.png" style="margin-top: -20px; clip-path: inset(100px 0 0 0);">
 
-<br>
 
----
-
-<br>
-
-## Table of Contents
-
-| | Section |
-|---|---|
-| 1  | [Overview](#overview)                             |
-| 2  | [Quick Start](#quick-start)                       |
-| 3  | [Moduler Model Build](#moduler-model-build)       |
-| 4  | [Dataloaders](#dataloaders)                       |
-| 5  | [Forking-Sequences](#forking-sequences)           |
-| 6  | [Training](#training)                             |
-| 7  | [Validation Strategies](#validation-strategies)   |
-| 8  | [Metrics](#metrics)                               |
-| 9  | [Inference](#inference)                           |
-| 10 | [Forecast Ensembling](#forecast-ensembling)       |
-| 11 | [Citations](#citations)                           |
-| 12 | [License](#license)                               |
+<p align="center">
+  <a href="#overview">Overview</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#modular-model-build">Modular Model Build</a> •
+  <a href="#dataloaders">Dataloaders</a> •
+  <a href="#forking-sequences">Forking Sequences</a> •
+  <a href="#training">Training</a> •
+  <a href="#validation-strategies">Validation Strategies</a> •
+  <a href="#metrics">Metrics</a> •
+  <a href="#inference">Inference</a> •
+  <a href="#forecast-ensembling">Forecast Ensembling</a> •
+  <a href="#citations">Citations</a> •
+  <a href="#license">License</a>
+</p>
 
 <br>
 
@@ -100,7 +93,7 @@ python train_models.py dataset=simglucose model=tstmomentmica
 <br>
 
 
-## Moduler Model Build
+## Modular Model Build
 
 When adding a model config file in `config/models/`, select encoder, decoder, and output layer.
 Any component can be set to `none` to skip it.

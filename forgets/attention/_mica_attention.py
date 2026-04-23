@@ -142,6 +142,8 @@ class MICAScaledDotProductAttention(nn.Module):
         numerator = sigma_q @ memory_matrix         # [B, C, H, P, D]
         denominator = (sigma_q @ z) + 1e-6 # [B, C, H, P, 1]
         A_mem = numerator / denominator             # [B, C, H, P, D]
+
+        # Handle maked channels
         A_mem = A_mem * channel_mask.float().view(
                     query_states.shape[0], 
                     query_states.shape[1], 1, 1, 1

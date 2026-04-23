@@ -30,8 +30,9 @@ class Model(nn.Module):
     
     def forward(
         self,
-        x_enc:          torch.Tensor,
+        x_enc: torch.Tensor,
         available_mask: torch.Tensor = None,
+        channel_mask: torch.Tensor = None,
         **kwargs,
     ) -> torch.Tensor:
         """
@@ -63,22 +64,19 @@ class Model(nn.Module):
         attention_mask = _make_causal_token_mask(key_padding_mask=key_padding_mask, device=x_enc.device) # [B, C, 1, n_patch, n_patch]
         attention_mask = attention_mask.reshape(batch_size * n_channels, 1, patch_num_inp, patch_num_inp) # [B * C, 1, n_patch, n_patch]
 
-        print(f"before toeknize: {x_enc.shape=}")
         x_enc = self.tokenizer(x=x_enc) # [B, C, n_patch, patch_len]
-        print(f"after tokenize: {x_enc.shape=}")
         x_enc = self.input_layer(x=x_enc) # [B, C, n_patch, d_model]
-        print(f"after input layer: {x_enc.shape=}")
 
         x_enc  = x_enc.reshape(
             batch_size * n_channels, patch_num_inp, self.hidden_size
         )
 
-        outputs = self.encoder(
+        enc_out = self.encoder(
             n_channels = n_channels,
             inputs_embeds = x_enc,
             attention_mask = attention_mask,
+            channel_mask = channel_mask,
         )
-        enc_out = outputs.last_hidden_state  # [B*C, n_patch, d_model]
 
         # standard: [B*C, 1, P, d_model]
         # forking:  [B*C, T, P, d_model]]
@@ -144,17 +142,19 @@ class Transformer(BaseModel):
         # TODO @wpotosna Extend MICA for covariates
 
         horizon = batch["horizon"]
-
         x = batch["insample_y"].clone() # [B, L+(T-1)*step_size, C, 1+Vh]
-        input_mask = batch["available_mask"].clone()  # [B, L+(T-1)*step_size, C]
+        available_mask = batch["available_mask"].clone()  # [B, L+(T-1)*step_size, C]
+        channel_mask = batch["channel_mask"].clone()  # [B, L+(T-1)*step_size, C]
+
         x = x[..., 0] # [B, L+(T-1)*step_size, C]  target only
         x_enc_in = x.permute(0, 2, 1) # [B, C, L+(T-1)*step_size]
-        input_mask = input_mask.permute(0, 2, 1) # [B, C, L+(T-1)*step_size]
+        available_mask = available_mask.permute(0, 2, 1) # [B, C, L+(T-1)*step_size]
 
         forecast = self.model(
             x_enc = x_enc_in,
-            available_mask = input_mask,           # [B, C, seq_len]
-        )                                          # [B, C, P_total, d_model]
+            available_mask = available_mask, # [B, C, seq_len]
+            channel_mask = channel_mask, # [B, C]
+        )
 
         B, C, T, _ = forecast.shape
         forecast = forecast.reshape(B, C, T, horizon, -1)  # [B, C, T, H, Q]

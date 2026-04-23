@@ -420,7 +420,8 @@ class ForkingSequences:
             insample_y = enc_block[:, :enc_size],
             outsample_y = enc_windows[:, :, eff_L:, :, 0],
             outsample_mask = outsample_mask,
-            available_mask = mask_block[:, :enc_size],
+            available_mask = mask_block[:, :enc_size], # [B, T, C]
+            channel_mask = batch['channel_mask'], # [B, C]
             fcd_samples = valid_fcds,
             horizon = horizon,
         )

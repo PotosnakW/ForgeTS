@@ -6,7 +6,7 @@
 
 
 <p align="center">
-  <em>Develop and Evaluate time-series forecasting architectures through controlled, component-level studies</em>
+  <em>Forge time-series forecasting architectures through controlled, component-level studies</em>
 </p>
 
 <br>
@@ -43,10 +43,10 @@
 
 ## Overview
 
-**Most forecasting repos benchmark at the model level. FoundryTS benchmarks at the component level.**
+**Most forecasting codebases benchmark at the model level. ForgeTS benchmarks at the component level.**
 
 <p align="center">
-  <img src="figures/ForgeTS_motivation.png" width="700"/>
+  <img src="figures/ForgeTS_motivation.jpg" width="720"/>
 </p>
 
 <br>
@@ -59,8 +59,8 @@
 
 ### 1. Install
 ```bash
-git clone <repo>
-cd tsfm_base
+git clone git@github.com:PotosnakW/ForgeTS.git
+cd forgets
 pip install -e .
 ```
 
@@ -106,33 +106,38 @@ decoder: none          # or transformer, google/t5-efficient-tiny, etc.
 output_layer: linear_proj  # or none
 ```
 
-### Supported ncoders
-
+### Supported Tokenization
+| `tokenization` | Notes |
+|---|---|
+| `fixed_patch` | Fixed-length patch tokenization with configurable `patch_len` and `stride` |
+ 
+### Supported Input Layers
+| `input_layer` | Key config params | Notes |
+|---|---|---|
+| `linear` | `dropout`, `positional_encoding` | Linear projection with optional positional encodings and dropout |
+| `none` | — | No input layer — raw tokens passed directly to encoder |
+ 
+### Supported Encoders
 | `model_type` | `encoder` | Key config params |
 |---|---|---|
 | `transformer` | `patchtst` | `patch_len`, `stride`, `n_heads`, `n_layers`, `hidden_size` |
-| `transformer` | `google/t5-efficient-tiny` | `patch_len`, `stride`, `n_heads`, `n_layers`, `hidden_size` |
-| `transformer` | `google/t5-efficient-mini` | `patch_len`, `stride`, `n_heads`, `n_layers`, `hidden_size` |
-| `transformer` | `google/t5-efficient-small` | `patch_len`, `stride`, `n_heads`, `n_layers`, `hidden_size` |
-| `transformer` | `google/t5-efficient-base` | `patch_len`, `stride`, `n_heads`, `n_layers`, `hidden_size` |
-| `transformer` | `google/t5-efficient-large` | `patch_len`, `stride`, `n_heads`, `n_layers`, `hidden_size` |
 | `transformer` | `none` | — |
 | `rnn` | `rnn` | `n_layers`, `hidden_size`, `dropout` |
 | `rnn` | `lstm` | `n_layers`, `hidden_size`, `dropout` |
-| `rnn` | `none` | — |
-
+| `cnn` | `cnn` | `n_layers`, `hidden_size`, `dropout`, `kernel_size`, `dilations` |
+| `none` | `none` | — |
+ 
 ### Supported Decoders
-
 | `decoder` | Notes |
 |---|---|
 | `none` | No decoder — encoder output passed directly to output layer |
-
+ 
 ### Supported Output Layers
-
 | `output_layer` | Notes |
 |---|---|
 | `linear_proj` | Projects last dimension to H × c_out, where c_out is the loss output dimension |
 | `none` | No projection — returns encoder/decoder output as-is |
+
 
 <br>
 
@@ -612,16 +617,16 @@ print("Ensemble MAE:", mae(smoothed, targets, mask))
 If you find this work useful, please cite:
 
 ```bibtex
-@misc{potosnak2026tsrepo,
-  title        = {Time Series Forecast Repo},
+@misc{potosnak2026forgets,
+  title        = {ForgeTS},
   author       = {Potosnak, Willa and Dubrawski, Artur},
   year         = {2026},
-  howpublished = {\url{https://github.com/your-org/your-repo}}
+  url={https://github.com/PotosnakW/ForgeTS}
 }
 ```
 
 ```bibtex
-@article{potosnak2026forking,
+@article{potosnak2026forkingsequences,
   title        = {Forking-Sequences},
   author       = {Potosnak, Willa and Wolff, Malcolm and Cao, Mengfei and Ma, Ruijun and
                   Konstantinova, Tatiana and Efimov, Dmitry and Mahoney, Michael W. and
@@ -630,7 +635,7 @@ If you find this work useful, please cite:
 }
 ```
 
-Our repo was inspired by the following open-source projects, whose foundational contributions to the community have shaped the landscape of forecasting benchmarking, development, and follow-on repos like this one.
+Our codebase was inspired by the following open-source projects, whose foundational contributions to the community have shaped the landscape of forecasting benchmarking, development, and follow-on codebases like this one.
 
 ```bibtex
 @misc{olivares2022library_neuralforecast,

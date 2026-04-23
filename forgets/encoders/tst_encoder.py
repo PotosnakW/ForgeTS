@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Optional
 
-from ..attention._mica_attention import MultiheadAttention
+from ..attention._attention_layer import MultiheadAttention
 from ..common._modules import Transpose
 
 def get_activation_fn(activation):
@@ -52,7 +52,8 @@ class TSTEncoder(nn.Module):
         self,
         inputs_embeds: torch.Tensor,
         n_channels: int,
-        attention_mask: Optional[torch.Tensor] = None,
+        attention_mask: torch.Tensor,
+        channel_mask: torch.Tensor,
     ):
         output = inputs_embeds
         scores = None
@@ -63,18 +64,20 @@ class TSTEncoder(nn.Module):
                     n_channels=n_channels,
                     prev=scores,
                     attention_mask=attention_mask,
+                    channel_mask=channel_mask,
                 )
-            self.last_hidden_state = output
-            return self #output
+    
+            return output
         else:
             for mod in self.layers:
                 output = mod(
                     inputs_embeds=output, 
                     n_channels=n_channels,
-                    attention_mask=attention_mask
+                    attention_mask=attention_mask,
+                    channel_mask=channel_mask,
                 )
-            self.last_hidden_state = output
-            return self
+
+            return output
 
 class TSTEncoderLayer(nn.Module):
     """
@@ -127,8 +130,9 @@ class TSTEncoderLayer(nn.Module):
         self,
         inputs_embeds: torch.Tensor,
         n_channels: int,
+        attention_mask: torch.Tensor,
+        channel_mask: torch.Tensor,
         prev: Optional[torch.Tensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
     ):  # -> Tuple[torch.Tensor, Any]:
 
         # Multi-Head attention sublayer
@@ -143,6 +147,7 @@ class TSTEncoderLayer(nn.Module):
                 V=inputs_embeds,
                 prev=prev,
                 attention_mask=attention_mask,
+                channel_mask=channel_mask,
             )
         else:
             inputs_embeds2, attn = self.self_attn(
@@ -151,6 +156,7 @@ class TSTEncoderLayer(nn.Module):
                 K=inputs_embeds,
                 V=inputs_embeds,
                 attention_mask=attention_mask,
+                channel_mask=channel_mask,
             )
         if self.store_attn:
             self.attn = attn

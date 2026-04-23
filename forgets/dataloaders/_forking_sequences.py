@@ -119,6 +119,7 @@ class ForkingSequences:
         self,
         context_len: int,
         fcd_samples: int = -1,
+        patch_len: int = 1,
         stride: int = 1,
         fcd_sampler: str = "heterogeneous",
     ):
@@ -127,6 +128,7 @@ class ForkingSequences:
                 f"fcd_sampler must be one of {self.SAMPLERS}, got '{fcd_sampler}'"
             )
         self.context_len = context_len
+        self.patch_len = patch_len
         self.stride = stride
         self.fcd_sampler = (
             self._heterogeneous_sampler
@@ -152,8 +154,8 @@ class ForkingSequences:
     ) -> Tuple[Tensor, int]:
         
         B, S, _ = available_mask.shape
-        L, H    = self.context_len, horizon
-
+        H = horizon
+        L = self.context_len if self.context_len != -1 else self.patch_len
         block_len = L + (fcd_samples - 1) * self.stride + H
         max_start = S - block_len
         if max_start < 0:
@@ -351,7 +353,7 @@ class ForkingSequences:
 
         B, T, C, _ = x_enc_full.shape
 
-        block_len = (fcd_samples - 1) * self.stride + horizon
+        block_len = self.patch_len + (fcd_samples - 1) * self.stride + horizon
         window_start, _ = self._homogeneous_sampler(
             available_mask=available_mask, 
             channel_mask=channel_mask,
@@ -359,6 +361,16 @@ class ForkingSequences:
             horizon=horizon,
         )
         block_end = window_start[0].item() + block_len  # same for all series in batch
+
+        # align window_start to patch boundary
+        remainder = window_start[0].item() % self.stride
+        if remainder != 0:
+            up = window_start[0].item() + (self.stride - remainder)
+            down = window_start[0].item() - remainder
+            # prefer rounding up unless it pushes block_end past T
+            aligned = up if up + block_len <= T else down
+            window_start = torch.tensor([aligned]).repeat(B)
+            block_end = aligned + block_len
 
         enc_block = x_enc_full[:, :block_end]
         mask_block = available_mask[:, :block_end]
@@ -391,8 +403,8 @@ class ForkingSequences:
         enc_block   = x_enc_full
         mask_block  = available_mask
         loss_mask_block = loss_mask
-        window_size = 1 + horizon
-        valid_fcds = (T - horizon) // self.stride
+        window_size = self.patch_len + horizon
+        valid_fcds = (T - self.patch_len - horizon) // self.stride + 1
 
         return enc_block, mask_block, loss_mask_block, window_size, valid_fcds
 
@@ -403,7 +415,7 @@ class ForkingSequences:
         fcd_samples: int=-1,
     ) -> Dict[str, Tensor]:
 
-        enc_block, mask_block, loss_mask_block, window_size ,valid_fcds = self._strategy(
+        enc_block, mask_block, loss_mask_block, window_size, valid_fcds = self._strategy(
             batch=batch, 
             horizon=horizon, 
             fcd_samples=fcd_samples,

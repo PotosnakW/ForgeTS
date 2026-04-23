@@ -47,13 +47,19 @@ class DataLoaderFactory:
         )
     
     def _full_series_collate_fn(self, batch):
-        ctx       = ctx = getattr(self.mcfg, "context_len", -1)
+        ctx = ctx = getattr(self.mcfg, "context_len", -1)
         patch_len = getattr(self.mcfg, "patch_len", 1)
-        min_pad   = ctx - patch_len if ctx != -1 else 0
+        stride = getattr(self.mcfg, "stride", 1)
+        min_pad = ctx - patch_len if ctx != -1 else 0
 
         T_max  = max(s["x_enc"].shape[0] for s in batch) + min_pad
         C_max  = max(s["x_enc"].shape[-2] for s in batch)
         Vh_max = max(s["x_enc"].shape[-1] - 1 for s in batch)
+
+        # round up so (T_max - patch_len) is divisible by stride → integer n_patch
+        remainder = (T_max - patch_len) % stride
+        if remainder != 0:
+            T_max = T_max + (stride - remainder)
 
         B            = len(batch)
         channel_mask = torch.zeros(B, C_max, dtype=torch.float32)

@@ -74,13 +74,15 @@ class BaseModel(nn.Module):
         self._fork_sequences_train = ForkingSequences(
             context_len = config.context_len,
             fcd_samples = config.fcd_samples,
-            stride = 1,
+            patch_len = config.patch_len,
+            stride = config.stride,
             fcd_sampler = config.fcd_sampler,
         )
         self._fork_sequences_eval = ForkingSequences(
             context_len = config.context_len,
             fcd_samples = -1,
-            stride = 1,
+            patch_len = config.patch_len,
+            stride = config.stride,
         )
 
         loss_fn = get_loss(config.loss)

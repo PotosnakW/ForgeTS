@@ -97,13 +97,11 @@ class Model(nn.Module):
 
         Slides a P_std-patch window over P_total encoder patches → T predictions.
         T is derived at runtime from enc_out so fcd_samples=-1 (variable T) works.
-        step=1 patch is correct: fork_sequences already spaced raw blocks by
-        stride timesteps, so consecutive patch windows are exactly 1 patch apart.
         """
         _, patch_num_inp, _ = enc_out.shape
         enc_out = (
             enc_out
-            .unfold(dimension=1, size=self.patch_num, step=1)  # [B*C, T, d_model, patch_num_inp]
+            .unfold(dimension=1, size=self.patch_num, step=1)  # [B*C, T, d_model, patch_num_inp]; step must equal 1
             .permute(0, 1, 3, 2) # [B*C, T, patch_num_inp, d_model]
             .contiguous()
         )

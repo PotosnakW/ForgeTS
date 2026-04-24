@@ -17,7 +17,6 @@
 
 ![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
-<img src="method.png" style="margin-top: -20px; clip-path: inset(100px 0 0 0);">
 
 
 <p align="center">

@@ -1,8 +1,9 @@
 import numpy as np
 
 class Ensembler:
-    def __init__(self, ensemble_method='mean', **kwargs):
+    def __init__(self, ensemble_method='mean', stride=1, **kwargs):
         self.kwargs = kwargs
+        self.stride = stride
         methods = {
             'mean':     self._cumulative_mean,
             'median':   self._cumulative_median,
@@ -20,6 +21,19 @@ class Ensembler:
         returns: (B, T, H, C, Q)
         """
         B, T, H, C, Q = preds.shape
+
+        stride = self.stride
+        
+        if stride == H:
+            raise ValueError(
+                f"stride={stride} equals H={H}: windows are non-overlapping so each "
+                "target date has exactly one forecast. Ensembling has no effect — "
+                "use ensemble_method='identity' instead."
+            )
+        elif stride > H:
+            raise ValueError(
+                f"stride={stride} > H={H}: some target dates will have no forecast coverage."
+            )
 
         # fold Q into C → (B, T, H, C*Q) so all internal logic is unchanged
         preds_flat = preds.reshape(B, T, H, C * Q)
@@ -39,7 +53,7 @@ class Ensembler:
 
         out = self.ensembled_preds_reshape_for_windows(ensembled)                # (B, T, H, C*Q)
 
-        return out.reshape(B, out.shape[1], H, C, Q)                             # (B, T, H, C, Q)
+        return out.reshape(B, T, H, C, Q)
 
     def _reshape_windows_by_date(self, preds, mask=None):
         """
@@ -63,51 +77,28 @@ class Ensembler:
         
         Returns
         -------
-        np.ndarray [B, T+H-1, H, C]
+         np.ndarray [B, (T-1)*stride + H, H, C]
         """
         B, T, H, C = preds.shape
+        S = (T - 1) * self.stride + H
         
         if mask is not None:
             preds = np.where(mask == 0, np.nan, preds.copy())
 
-        # Flatten windows into a single timeline: [B, T*H, C]
-        flatten_preds = preds.reshape(B, T * H, C)
-
-        # Build index grid [T, H] and flip each row
-        idx  = np.arange(T * H).reshape(T, H)
-        flipped_idx  = np.fliplr(idx)
-
-        # Pad with NaN rows above and below to handle edge dates that aren't
-        # covered by a full H windows — output will have T+H-1 rows
-        zs = np.full((H - 1, H), np.nan)
-        padded_idx = np.concatenate([zs, flipped_idx, zs])
-
-        # Slide an (H, H) window across padded_idx; each position captures the
-        # H overlapping forecast windows that share a target date
-        idx_windows = np.lib.stride_tricks.sliding_window_view(padded_idx, window_shape=(H, H))
-
-        # The diagonal of each window picks out exactly one prediction per horizon
-        # for that target date, giving shape [T+H-1, H]
-        date_idx = np.diagonal(idx_windows[:, 0], axis1=1, axis2=2)
-
-        # Track which positions are real vs NaN-padded edge dates
-        nan_mask = ~np.isnan(date_idx)
-        idx2 = np.where(np.isnan(date_idx), 0, date_idx).astype(int)
-
-        # Gather predictions using the flat timeline indices, then restore NaNs at edges
-        indexed_preds = flatten_preds[:, idx2, :]
-        nan_mask_exp = nan_mask[None, :, :, None]
-        
-        return np.where(~nan_mask_exp, np.nan, indexed_preds)
+        t_grid, h_grid = np.meshgrid(np.arange(T), np.arange(H), indexing='ij')
+        d_grid = t_grid * self.stride + h_grid  # (T, H): target date for each (t, h) 
+        out = np.full((B, S, H, C), np.nan)
+        out[:, d_grid, h_grid, :] = preds       # scatter (B, T, H, C) → (B, S, H, C)
+        return out
 
     def ensembled_preds_reshape_for_windows(self, ensembled_preds):
         """unchanged — operates on (B, S, H, C*Q)"""
         B, S, H, C = ensembled_preds.shape
-        flipped      = np.flip(ensembled_preds, axis=2)
-        windows      = np.lib.stride_tricks.sliding_window_view(flipped, window_shape=(H, H), axis=(1, 2))
-        windows_diags = np.diagonal(windows[:, :, 0], axis1=3, axis2=4)         # (B, n_windows, C*Q, H)
-        windows_diags = windows_diags.transpose(0, 1, 3, 2)                     # (B, n_windows, H, C*Q)
-        return windows_diags
+        T = (S - H) // self.stride + 1
+
+        t_grid, h_grid = np.meshgrid(np.arange(T), np.arange(H), indexing='ij')
+        d_grid = t_grid * self.stride + h_grid  # same index grid as scatter 
+        return ensembled_preds[:, d_grid, h_grid, :]  # gather → (B, T, H, C)
 
     def _cumulative_mean(self, preds, window_size=None, **kwargs):
         _, H, _ = preds.shape

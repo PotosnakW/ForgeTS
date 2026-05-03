@@ -32,7 +32,8 @@ class Ensembler:
             )
         elif stride > H:
             raise ValueError(
-                f"stride={stride} > H={H}: some target dates will have no forecast coverage."
+                f"stride={stride} > H={H}: some target dates will have no forecast coverage. "
+                "Please review the selected stride parameter used in your experiment."
             )
 
         # fold Q into C → (B, T, H, C*Q) so all internal logic is unchanged
@@ -44,7 +45,10 @@ class Ensembler:
             if mask is not None else None
         )
 
-        masked_preds = self._reshape_windows_by_date(preds_flat, mask_flat)  # (B, S, H, C*Q)
+        masked_preds = self._reshape_windows_by_date(
+            x=preds_flat, 
+            mask=mask_flat
+        )  # (B, S, H, C*Q)
 
         B_, S_, H_, CQ_ = masked_preds.shape
         flat      = masked_preds.reshape(B_ * S_, H_, CQ_)                       # (B*S, H, C*Q)
@@ -55,40 +59,40 @@ class Ensembler:
 
         return out.reshape(B, T, H, C, Q)
 
-    def _reshape_windows_by_date(self, preds, mask=None):
+    def _reshape_windows_by_date(self, x, mask=None):
         """
-        Rearranges overlapping forecast windows from [B, T, H, C] into [B, T+H-1, H, C],
-        where each row along the second axis groups all predictions targeting the same date.
+        Rearranges overlapping forecast windows from [B, T, H, C] into
+        [B, (T-1)*stride + H, H, C], grouping predictions by their target date.
 
         In a rolling forecast setup, multiple windows overlap on the same target date — e.g.
         the 1-step-ahead prediction from window t and the 2-step-ahead from window t-1 both
         target date t. This function collects those predictions into a single row, enabling
         direct comparison of forecasts that share the same target.
 
-        The output has T+H-1 rows (one per unique target date) and H columns (one per
-        forecast horizon that could predict that date). Edge dates are partially observed:
-        the first and last H-1 rows will contain NaNs for windows that don't reach that date.
+        The output has (T-1)*stride + H rows (one per unique target date) and H columns
+        (one per forecast horizon that could predict that date). Edge dates are partially
+        observed and will contain NaNs for horizons that don't reach that date.
 
         Parameters
         ----------
-        preds : np.ndarray [B, T, H, C]
-        mask  : np.ndarray [B, T, H, C] or None
+        x : np.ndarray [B, T, H, C]
+        mask : np.ndarray [B, T, H, C] or None
             If provided, masked positions (mask == 0) are set to NaN before rearranging.
-        
+
         Returns
         -------
-         np.ndarray [B, (T-1)*stride + H, H, C]
+        np.ndarray [B, (T-1)*stride + H, H, C]
         """
-        B, T, H, C = preds.shape
+        B, T, H, C = x.shape
         S = (T - 1) * self.stride + H
         
         if mask is not None:
-            preds = np.where(mask == 0, np.nan, preds.copy())
+            x = np.where(mask == 0, np.nan, x.copy())
 
         t_grid, h_grid = np.meshgrid(np.arange(T), np.arange(H), indexing='ij')
         d_grid = t_grid * self.stride + h_grid  # (T, H): target date for each (t, h) 
         out = np.full((B, S, H, C), np.nan)
-        out[:, d_grid, h_grid, :] = preds       # scatter (B, T, H, C) → (B, S, H, C)
+        out[:, d_grid, h_grid, :] = x       # scatter (B, T, H, C) → (B, S, H, C)
         return out
 
     def ensembled_preds_reshape_for_windows(self, ensembled_preds):

@@ -16,6 +16,7 @@ class Model(nn.Module):
 
         self.hidden_size = config.hidden_size
         config.nf = config.hidden_size
+        self.c_out = config.c_out
 
         self.tokenizer = BaseTokenizer().get_tokenizer(config=config)
         self.input_layer = BaseInputLayer().get_input_layer(config=config)
@@ -23,15 +24,13 @@ class Model(nn.Module):
         self.decoder = BaseDecoder().get_decoder(config=config)
         self.output_layer = BaseOutputLayer().get_output_layer(config=config)
     
-    def forward(self, x_enc, fcd_samples, available_mask=None, **kwargs):
+    def forward(self, x_enc, horizon, fcd_samples, available_mask=None, **kwargs):
         batch_size, n_channels, seq_len = x_enc.shape
 
         x_enc = self.tokenizer(x=x_enc)
         x_enc = self.input_layer(x=x_enc) 
 
-        x = x_enc.reshape(batch_size * n_channels, seq_len, 1)
-        x = self.W_P(x)                                          # [B*C, seq_len, hidden_size]
-        x = self.dropout(x)
+        x = x_enc.reshape(batch_size * n_channels, seq_len, self.hidden_size)
 
         enc_out = self.encoder(inputs_embeds=x, n_channels=n_channels) # [B*C, seq_len, hidden_size]
     
@@ -40,8 +39,10 @@ class Model(nn.Module):
         enc_out = enc_out.unsqueeze(2)  # [B*C, fcd_samples, 1, hidden_size]
 
         dec_out = self.decoder(enc_out)                          # [B*C, T, 1, hidden_size]
-        dec_out = dec_out.reshape(batch_size, n_channels, fcd_samples, 1, self.hidden_size)
-        output  = self.output_layer(dec_out)                     # [B, C, T, H*c_out]
+        dec_out = dec_out.reshape(batch_size, n_channels, *dec_out.shape[1:])
+        output = self.output_layer(dec_out)                     # [B, C, T, H*c_out]
+        output = output.reshape(batch_size, n_channels, fcd_samples, horizon, self.c_out)  # [B, C, T, K*O, c_out]
+    
         return output
 
 class RNN(BaseModel):
@@ -72,12 +73,10 @@ class RNN(BaseModel):
 
         forecast = self.model(
             x_enc = x_enc_in,
+            horizon = horizon,
             fcd_samples = batch.get("fcd_samples"),
             available_mask = input_mask,           # [B, C, seq_len]
         )                                          # [B, C, P_total, d_model]
-
-        B, C, T, _ = forecast.shape
-        forecast = forecast.reshape(B, C, T, horizon, -1)  # [B, C, T, H, Q]
         forecast = forecast.permute(0, 2, 3, 1, 4)        # [B, T, H, C, Q]
     
         return forecast                                    # [B, T, H, C, Q]

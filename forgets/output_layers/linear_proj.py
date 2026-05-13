@@ -11,7 +11,8 @@ class LinearProjectionLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.flatten = nn.Flatten(start_dim=-2)
-        self.linear  = nn.Linear(config.nf, config.horizon * config.c_out)
+        proj_len = getattr(config, 'output_patch_len', None) or config.horizon
+        self.linear  = nn.Linear(config.nf, proj_len * config.c_out)
         self.dropout = nn.Dropout(config.head_dropout)
 
     def forward(self, x) -> torch.Tensor:
@@ -32,14 +33,16 @@ class LinearProjectionLayerMultivariate(nn.Module):
     def __init__(self, config):
         super().__init__()
         n_vars = config.n_vars
+
+        proj_len = getattr(config, 'output_patch_len', None) or config.horizon
         self.flattens = nn.ModuleList([nn.Flatten(start_dim=-2) for _ in range(n_vars)])
-        self.linears  = nn.ModuleList([nn.Linear(config.nf, config.horizon * config.c_out) for _ in range(n_vars)])
+        self.linears  = nn.ModuleList([nn.Linear(config.nf, proj_len * config.c_out) for _ in range(n_vars)])
         self.dropouts = nn.ModuleList([nn.Dropout(config.head_dropout) for _ in range(n_vars)])
 
-    def forward(self, x) -> torch.Tensor:
+    def forward(self, x, n_channels) -> torch.Tensor:
         # x: [B, C, T, P, d_model]
         x_out = []
-        for i in range(x.shape[1]):
+        for i in range(n_channels):
             z = self.flattens[i](x[:, i])   # [B, T, P*d_model]
             z = self.linears[i](z)           # [B, T, H*c_out]
             z = self.dropouts[i](z)

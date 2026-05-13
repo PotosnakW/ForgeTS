@@ -20,7 +20,8 @@ class Model(nn.Module):
         self.stride = config.stride
         patch_num = int((config.context_len - config.patch_len) / config.stride + 1)
         self.patch_num = patch_num
-        config.nf = config.hidden_size * patch_num
+        config.nf = config.nf
+        self.c_out = config.c_out
 
         self.tokenizer = BaseTokenizer().get_tokenizer(config=config)
         self.input_layer = BaseInputLayer().get_input_layer(config=config)
@@ -85,13 +86,15 @@ class Model(nn.Module):
         enc_out    = self._fs_unfold(enc_out)                           # [B*C, T, P, d]
 
         dec_out = self.decoder(
-            enc_out = enc_out[:, :, -1, :],                   # [B*C, T, d]
-            key_padding_mask = key_padding_mask,                       # [B, C, T]
+            enc_out = enc_out[:, :, -1, :],   # [B*C, T, d] — memory (keys/values)
+            key_padding_mask = key_padding_mask,
             horizon = horizon,
-        )  
+        )
         
-        dec_out = dec_out.reshape(batch_size, n_channels, fcd_samples, -1, self.hidden_size)
-        output  = self.output_layer(dec_out)                           # [B, C, T, P/K, O]
+        dec_out = dec_out.reshape(batch_size, n_channels, *dec_out.shape[1:])
+        output  = self.output_layer(dec_out)                        # [B*C, T, H*c_out] or [B*C, T, K, O*c_out]
+        output  = output.reshape(batch_size, n_channels, fcd_samples, -1, self.c_out)  # [B, C, T, K*O, c_out]
+        output  = output[:, :, :, :horizon, :]                      # [B, C, T, H, c_out]
 
         return output
 
@@ -160,9 +163,6 @@ class Transformer(BaseModel):
             available_mask = available_mask, # [B, C, seq_len]
             channel_mask = channel_mask, # [B, C]
         )
-
-        B, C, T, _ = forecast.shape
-        forecast = forecast.reshape(B, C, T, horizon, -1)  # [B, C, T, H, Q]
         forecast = forecast.permute(0, 2, 3, 1, 4)        # [B, T, H, C, Q]
     
         return forecast                                    # [B, T, H, C, Q]

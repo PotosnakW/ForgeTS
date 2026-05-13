@@ -31,6 +31,8 @@ class Model(nn.Module):
     def forward(
         self,
         x_enc: torch.Tensor,
+        horizon: int,
+        fcd_samples: int,
         available_mask: torch.Tensor = None,
         channel_mask: torch.Tensor = None,
         **kwargs,
@@ -54,22 +56,22 @@ class Model(nn.Module):
 
         # build attention mask: [B, C, n_patch]
         if available_mask is not None:
-            patch_avail = available_mask.unfold(-1, self.patch_len, self.stride)
-            key_padding_mask = patch_avail.any(dim=-1).float() # [B, C, n_patch]
+            patch_avail      = available_mask.unfold(-1, self.patch_len, self.stride)
+            key_padding_mask = patch_avail.any(dim=-1).float()         # [B, C, T]
         else:
             key_padding_mask = torch.ones(
-                batch_size, n_channels, patch_num_inp
+                batch_size, n_channels, patch_num_inp, device=x_enc.device
             )
 
-        attention_mask = _make_causal_token_mask(key_padding_mask=key_padding_mask, device=x_enc.device) # [B, C, 1, n_patch, n_patch]
-        attention_mask = attention_mask.reshape(batch_size * n_channels, 1, patch_num_inp, patch_num_inp) # [B * C, 1, n_patch, n_patch]
 
-        x_enc = self.tokenizer(x=x_enc) # [B, C, n_patch, patch_len]
-        x_enc = self.input_layer(x=x_enc) # [B, C, n_patch, d_model]
+        attention_mask = _make_causal_token_mask(
+            key_padding_mask=key_padding_mask,
+            device=x_enc.device,
+        ).reshape(batch_size * n_channels, 1, patch_num_inp, patch_num_inp) # [B * C, 1, n_patch, n_patch]
 
-        x_enc  = x_enc.reshape(
-            batch_size * n_channels, patch_num_inp, self.hidden_size
-        )
+        x_enc   = self.tokenizer(x=x_enc)                              # [B, C, T, patch_len]
+        x_enc   = self.input_layer(x=x_enc)                            # [B, C, T, d]
+        x_enc   = x_enc.reshape(batch_size * n_channels, patch_num_inp, self.hidden_size)
 
         enc_out = self.encoder(
             n_channels = n_channels,
@@ -80,13 +82,16 @@ class Model(nn.Module):
 
         # standard: [B*C, 1, P, d_model]
         # forking:  [B*C, T, P, d_model]]
-        enc_out = self._fs_unfold(enc_out)
+        enc_out    = self._fs_unfold(enc_out)                           # [B*C, T, P, d]
 
-        dec_out = self.decoder(enc_out) # [B*C, T, P, d_model]
-        dec_out = dec_out.reshape(
-            batch_size, n_channels, -1, self.patch_num, self.hidden_size
-        ) # [B, C, T, P, d_model]
-        output = self.output_layer(dec_out)            # [B, C, H*c_out]
+        dec_out = self.decoder(
+            enc_out = enc_out[:, :, -1, :],                   # [B*C, T, d]
+            key_padding_mask = key_padding_mask,                       # [B, C, T]
+            horizon = horizon,
+        )  
+        
+        dec_out = dec_out.reshape(batch_size, n_channels, fcd_samples, -1, self.hidden_size)
+        output  = self.output_layer(dec_out)                           # [B, C, T, P/K, O]
 
         return output
 
@@ -150,6 +155,8 @@ class Transformer(BaseModel):
 
         forecast = self.model(
             x_enc = x_enc_in,
+            horizon=horizon, 
+            fcd_samples = batch.get("fcd_samples"),
             available_mask = available_mask, # [B, C, seq_len]
             channel_mask = channel_mask, # [B, C]
         )

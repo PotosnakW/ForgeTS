@@ -40,6 +40,33 @@ class _InfiniteLoader:
                 sampler.set_epoch(self._epoch)
             self._iter = iter(self.loader)
             return next(self._iter)
+        
+
+class _BaseLoss(nn.Module):
+    def __init__(self, loss_fn, scaler):
+        super().__init__()
+        self.loss_fn = loss_fn
+        self.scaler  = scaler
+
+    def _compute(self, batch):
+        y, preds = batch["outsample_y"], batch["preds"]
+        B, T, H, C = y.shape
+        y = y.reshape(B * T, H, C)
+        preds = preds.reshape(B * T, H, C, -1)
+        mask = batch["outsample_mask"].reshape(B * T, H, C).float()
+        return self.loss_fn(preds=preds, targets=y, mask=mask)
+
+class DenormSpaceLoss(_BaseLoss):
+    """Denorms preds before computing loss."""
+    def forward(self, batch):
+        batch = self.scaler(batch, norm_type='denorm')
+        return batch, self._compute(batch)
+
+class NormSpaceLoss(_BaseLoss):
+    """Keeps preds in norm space, norms targets to match."""
+    def forward(self, batch):
+        batch = self.scaler(batch, norm_type='norm_targets')
+        return batch, self._compute(batch)
 
 
 class BaseModel(nn.Module):
@@ -89,7 +116,15 @@ class BaseModel(nn.Module):
         if hasattr(config, "quantiles") and config.quantiles:
             loss_fn.quantiles = list(config.quantiles)
             loss_fn.outputsize_multiplier = len(config.quantiles)
+
         self.loss_fn = loss_fn
+
+        if config.loss_space == 'norm':
+            self.compute_loss = NormSpaceLoss(loss_fn=loss_fn, scaler=self.scaler)
+        elif config.loss_space == 'denorm':
+            self.compute_loss = DenormSpaceLoss(loss_fn=loss_fn, scaler=self.scaler)
+        else:
+            raise Exception('Loss space not recognized.')
 
         self.train_losses = []
         self.val_losses = []
@@ -97,31 +132,6 @@ class BaseModel(nn.Module):
     @abstractmethod
     def forward(self, batch: Dict[str, Tensor]) -> Tensor:
         ...
-
-    def compute_loss(self, batch: Dict[str, Tensor]) -> Tensor:
-        """
-        pred           : [B, T, H, C]
-        outsample_y    : [B, T, H, C]
-        outsample_mask : [B, T, H, C]  1=real timestep+channel, 0=padded/missing
-        """
-        y = batch["outsample_y"]
-        preds = batch["preds"]
-        B, T, H, C = y.shape
-
-        y = y.reshape(B * T, H, C)
-        preds = preds.reshape(B * T, H, C, -1)
-
-        outsample_mask = batch.get("outsample_mask")
-        if outsample_mask is not None:
-            mask = outsample_mask.reshape(B * T, H, C).float()
-        else:
-            mask = None
-
-        return self.loss_fn(
-            preds=preds, 
-            targets=y, 
-            mask=mask,
-        )
 
     def setup_training(
         self,
@@ -201,12 +211,10 @@ class BaseModel(nn.Module):
         fwd  = self.__dict__.get('_ddp_model', self)
 
         batch = self.scaler(batch, norm_type='norm')
-        preds = fwd(batch)
-        batch["preds"] = preds
-        batch = self.scaler(batch, norm_type='denorm')
-
-        loss = self.compute_loss(batch=batch)
+        batch["preds"] = fwd(batch)
+        batch, loss = self.compute_loss(batch=batch)  # handles denorm internally
         loss.backward()
+    
         nn.utils.clip_grad_norm_(self.parameters(), self.mcfg.gradient_clip_val)
         self.optimizer.step()
         if self.scheduler is not None:
@@ -219,13 +227,10 @@ class BaseModel(nn.Module):
         self._assert_training_ready()
         self.eval()
         batch = self._prepare_batch(raw_batch)
-
         batch = self.scaler(batch, norm_type='norm')
-        preds = self(batch)
-        batch["preds"] = preds
-        batch = self.scaler(batch, norm_type='denorm')
-    
-        return self.compute_loss(batch=batch).item()
+        batch["preds"] = self(batch)
+        _, loss = self.compute_loss(batch)  # handles denorm internally
+        return loss.item()
 
     @torch.no_grad()
     def validate(self) -> Dict[str, Dict[str, float]]:

@@ -4,6 +4,9 @@ seed: 1
 # ── Scaling ────────────────────────────────────────────
 scaler_type: 'standard'
 
+# ── Loss ────────────────────────────────────────────
+loss_space: 'norm' #'denorm'
+
 # ── DataLoader ──────────────────────────────────────────
 batch_size: 4
 valid_batch_size: 4

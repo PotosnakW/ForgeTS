@@ -91,6 +91,9 @@ class BaseModel(nn.Module):
             loss_fn.outputsize_multiplier = len(config.quantiles)
         self.loss_fn = loss_fn
 
+        self.train_losses = []
+        self.val_losses = []
+
     @abstractmethod
     def forward(self, batch: Dict[str, Tensor]) -> Tensor:
         ...
@@ -317,6 +320,7 @@ class BaseModel(nn.Module):
         pbar = tqdm(total=self.mcfg.max_steps, initial=self.global_step, desc="Training")
         while self.global_step < self.mcfg.max_steps:
             train_loss = self.train_step(next(train_iter))
+            self.train_losses.append((self.global_step, train_loss))  # (step, loss)
             self.global_step += 1
 
             if self._world_size > 1:
@@ -332,6 +336,8 @@ class BaseModel(nn.Module):
 
             if self.global_step % self.mcfg.val_check_interval == 0:
                 val_metrics = self.validate()
+                monitor_val = val_metrics[primary].get("loss", float("nan"))
+                self.val_losses.append((self.global_step, monitor_val))  # (step, loss)
                 final_metrics = val_metrics
                 self._log_val_metrics(val_metrics)
 
@@ -353,6 +359,11 @@ class BaseModel(nn.Module):
             pbar.update(1)
 
         pbar.close()
+
+        final_path = self.ckpt_manager.checkpoint_dir / "final.pt"
+        self.save_state(final_path)
+        logger.info("Saved → %s", final_path)
+
         return final_metrics
 
     def save_state(self, path: str | Path):
@@ -361,6 +372,8 @@ class BaseModel(nn.Module):
             "global_step":   self.global_step,
             "model":         self.state_dict(),
             "optimizer":     self.optimizer.state_dict(),
+            "train_losses": self.train_losses,
+            "valid_losses":   self.val_losses,
             "early_stopper": (
                 self.early_stopper.state_dict()
                 if hasattr(self.early_stopper, "state_dict") else

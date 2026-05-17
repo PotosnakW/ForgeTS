@@ -58,23 +58,27 @@ class Scaler(nn.Module):
         else:
             raise ValueError(f"Unknown scaler_type '{scaler_type}', must be 'revin', 'standard', or 'none'")
 
-    def _get_rolling_statistics(self, x):
+    def _get_rolling_statistics(self, x, mask):
         """
         For each timestep t, compute stats over x[:, 0:t+1, :, :]
         x: (B, T, C, X+1) where index 0 is target, rest are exogenous
+        mask : (B, T, C)  — 1 = valid, 0 = missing/padded  (optional)
         returns dict with mean, stdev: (B, T, C, X+1) — all slices
         """
         B, T, C, X1 = x.shape
-        counts  = torch.arange(1, T + 1, device=x.device, dtype=x.dtype).view(1, T, 1, 1)
-        mean    = torch.cumsum(x, dim=1) / counts           # (B, T, C, X+1)
-        mean_sq = torch.cumsum(x ** 2, dim=1) / counts
+
+        counts  = torch.cumsum(mask, dim=1).clamp(min=1)
+        mean    = torch.cumsum(x * mask, dim=1) / counts
+        mean_sq = torch.cumsum((x ** 2) * mask, dim=1) / counts
         stdev   = torch.sqrt((mean_sq - mean ** 2).clamp(min=0) + self.eps)
         return {'mean': mean, 'stdev': stdev}
 
     def forward(self, batch, norm_type):
         if norm_type == 'norm':
             x = batch["insample_y"].clone()  # (B, T, C, 1)
-            self.stats = self._get_rolling_statistics(x) if self.scaler_type != 'none' else {}
+            mask = batch.get("available_mask", None)  # (B, T, C) | None
+            mask = mask.unsqueeze(-1).expand_as(x)  # (B, T, C) -> (B, T, C, X+1)
+            self.stats = self._get_rolling_statistics(x, mask) if self.scaler_type != 'none' else {}
 
         elif norm_type == 'denorm':
             if not hasattr(self, 'stats'):

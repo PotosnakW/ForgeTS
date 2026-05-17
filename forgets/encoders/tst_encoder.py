@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import Optional
 
 from ..attention._attention_layer import MultiheadAttention
-from ..common._modules import Transpose
+from ..common._modules import Transpose, _make_causal_token_mask
 
 def get_activation_fn(activation):
     if callable(activation):
@@ -50,13 +50,19 @@ class TSTEncoder(nn.Module):
 
     def forward(
         self,
-        inputs_embeds: torch.Tensor,
+        x: torch.Tensor,
         n_channels: int,
-        attention_mask: torch.Tensor,
+        key_padding_mask: torch.Tensor,
         channel_mask: torch.Tensor,
     ):
-        output = inputs_embeds
+        output = x
         scores = None
+
+        attention_mask = _make_causal_token_mask(
+            key_padding_mask=key_padding_mask,
+            device=x.device,
+        ).reshape(x.shape[0], 1, x.shape[1], x.shape[1])
+    
         if self.res_attention:
             for mod in self.layers:
                 output, scores = mod(
@@ -64,6 +70,7 @@ class TSTEncoder(nn.Module):
                     n_channels=n_channels,
                     prev=scores,
                     attention_mask=attention_mask,
+                    key_padding_mask=key_padding_mask,
                     channel_mask=channel_mask,
                 )
     
@@ -74,6 +81,7 @@ class TSTEncoder(nn.Module):
                     inputs_embeds=output, 
                     n_channels=n_channels,
                     attention_mask=attention_mask,
+                    key_padding_mask=key_padding_mask,
                     channel_mask=channel_mask,
                 )
 
@@ -131,6 +139,7 @@ class TSTEncoderLayer(nn.Module):
         inputs_embeds: torch.Tensor,
         n_channels: int,
         attention_mask: torch.Tensor,
+        key_padding_mask: torch.Tensor,
         channel_mask: torch.Tensor,
         prev: Optional[torch.Tensor] = None,
     ):  # -> Tuple[torch.Tensor, Any]:
@@ -147,6 +156,7 @@ class TSTEncoderLayer(nn.Module):
                 V=inputs_embeds,
                 prev=prev,
                 attention_mask=attention_mask,
+                key_padding_mask=key_padding_mask,
                 channel_mask=channel_mask,
             )
         else:
@@ -156,6 +166,7 @@ class TSTEncoderLayer(nn.Module):
                 K=inputs_embeds,
                 V=inputs_embeds,
                 attention_mask=attention_mask,
+                key_padding_mask=key_padding_mask,
                 channel_mask=channel_mask,
             )
         if self.store_attn:

@@ -32,6 +32,7 @@ class ScaledDotProductAttention(nn.Module):
         v: torch.Tensor,
         n_channels: int,
         attention_mask: torch.Tensor,
+        key_padding_mask: torch.Tensor,
         channel_mask: torch.Tensor,
         prev: Optional[torch.Tensor] = None,
     ):

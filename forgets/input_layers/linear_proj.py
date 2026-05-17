@@ -20,10 +20,10 @@ class LinearProjectionLayer(nn.Module):
         )
         self.dropout = nn.Dropout(config.dropout)
 
-    def forward(self, x) -> torch.Tensor:
+    def forward(self, x, positions: torch.Tensor = None) -> torch.Tensor:
         # x: [B, C, P, p]
         x = self.linear(x) # x: [B, C, P, d]
-        x += self.pos_enc(x) # x: [B, C, P, p]
+        x += self.pos_enc(x=x, positions=positions) # x: [B, C, P, p]
         x = self.dropout(x) # x: [B, C, P, p]
 
         return x

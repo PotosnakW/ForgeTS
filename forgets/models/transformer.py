@@ -3,7 +3,6 @@ from torch import nn
 import torch
 
 from ..common._base_model import BaseModel
-from ..common._modules import PositionalEncoding, _make_causal_token_mask
 from ..tokenizers._base_tokenizer import BaseTokenizer
 from ..input_layers._base_input_layer import BaseInputLayer
 from ..encoders._base_encoder import BaseEncoder
@@ -57,27 +56,21 @@ class Model(nn.Module):
 
         # build attention mask: [B, C, n_patch]
         if available_mask is not None:
-            patch_avail      = available_mask.unfold(-1, self.patch_len, self.stride)
+            patch_avail = available_mask.unfold(-1, self.patch_len, self.stride)
             key_padding_mask = patch_avail.any(dim=-1).float()         # [B, C, T]
         else:
             key_padding_mask = torch.ones(
                 batch_size, n_channels, patch_num_inp, device=x_enc.device
             )
 
-
-        attention_mask = _make_causal_token_mask(
-            key_padding_mask=key_padding_mask,
-            device=x_enc.device,
-        ).reshape(batch_size * n_channels, 1, patch_num_inp, patch_num_inp) # [B * C, 1, n_patch, n_patch]
-
-        x_enc   = self.tokenizer(x=x_enc)                              # [B, C, T, patch_len]
-        x_enc   = self.input_layer(x=x_enc)                            # [B, C, T, d]
-        x_enc   = x_enc.reshape(batch_size * n_channels, patch_num_inp, self.hidden_size)
+        x_enc = self.tokenizer(x=x_enc)                              # [B, C, T, patch_len]
+        x_enc = self.input_layer(x=x_enc)                            # [B, C, T, d]
+        x_enc = x_enc.reshape(batch_size * n_channels, patch_num_inp, self.hidden_size)
 
         enc_out = self.encoder(
             n_channels = n_channels,
-            inputs_embeds = x_enc,
-            attention_mask = attention_mask,
+            x = x_enc,
+            key_padding_mask = key_padding_mask,
             channel_mask = channel_mask,
         )
 
@@ -86,12 +79,12 @@ class Model(nn.Module):
         enc_out    = self._fs_unfold(enc_out)                           # [B*C, T, P, d]
 
         dec_out = self.decoder(
-            enc_out = enc_out[:, :, -1, :],   # [B*C, T, d] — memory (keys/values)
+            x = enc_out,   # [B*C, T, d] — memory (keys/values)
             key_padding_mask = key_padding_mask,
             horizon = horizon,
         )
         
-        dec_out = dec_out.reshape(batch_size, n_channels, *dec_out.shape[1:])
+        dec_out = dec_out.reshape(batch_size, n_channels, fcd_samples, *dec_out.shape[2:])
         output  = self.output_layer(dec_out)                        # [B*C, T, H*c_out] or [B*C, T, K, O*c_out]
         output  = output.reshape(batch_size, n_channels, fcd_samples, -1, self.c_out)  # [B, C, T, K*O, c_out]
         output  = output[:, :, :, :horizon, :]                      # [B, C, T, H, c_out]

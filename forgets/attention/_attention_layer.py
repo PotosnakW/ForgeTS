@@ -65,6 +65,7 @@ class MultiheadAttention(nn.Module):
         n_channels: int,
         Q: torch.Tensor,
         attention_mask: torch.Tensor,
+        key_padding_mask: torch.Tensor,
         channel_mask: torch.Tensor,
         K: Optional[torch.Tensor] = None,
         V: Optional[torch.Tensor] = None,
@@ -108,6 +109,7 @@ class MultiheadAttention(nn.Module):
                 n_channels=n_channels,
                 prev=prev,
                 attention_mask=attention_mask,
+                key_padding_mask=key_padding_mask,
                 channel_mask=channel_mask,
             )
         else:
@@ -117,6 +119,7 @@ class MultiheadAttention(nn.Module):
                 v=v_s, 
                 n_channels=n_channels,
                 attention_mask=attention_mask,
+                key_padding_mask=key_padding_mask,
                 channel_mask=channel_mask,
             )
         

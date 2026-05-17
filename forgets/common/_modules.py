@@ -155,7 +155,7 @@ class PositionalEncoding(nn.Module):
             x += -0.001 if mean > eps else 0.001
         return cpe
 
-    def forward(self, x):
+    def forward(self, x, positions: torch.Tensor = None):
         """
         Returns positional encodings broadcastable to input tensor `x`.
         Accepts:

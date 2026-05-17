@@ -15,6 +15,7 @@ stride: 1
 hidden_size: 256
 n_layers: 4
 n_heads: 4
+nf: 129280 # (context_len  - patch_len + 1) * hidden_size
 linear_hidden_size: 1024
 dropout: 0.1
 head_dropout: False

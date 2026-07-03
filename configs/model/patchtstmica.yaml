@@ -34,6 +34,9 @@ activation: 'gelu'
 pre_norm: False
 store_attn: False
 
+# Optional efficiencies
+decode_fcd_size: -1
+
 # MICA variants
 mica_mixer_type: betas # betas, mlp, mlp_query
 mica_channel_weight_type: uniform # uniform, static, dynamic

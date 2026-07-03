@@ -50,9 +50,9 @@ class DataLoaderFactory:
         ctx = ctx = getattr(self.mcfg, "context_len", -1)
         patch_len = getattr(self.mcfg, "patch_len", 1)
         stride = getattr(self.mcfg, "stride", 1)
-        min_pad = ctx - patch_len if ctx != -1 else 0
-
-        T_max  = max(s["x_enc"].shape[0] for s in batch) + min_pad
+    
+        lengths = [s["x_enc"].shape[0] for s in batch]
+        T_max = max(lengths + [ctx - patch_len]) if ctx != -1 else max(lengths)
         C_max  = max(s["x_enc"].shape[-2] for s in batch)
         Vh_max = max(s["x_enc"].shape[-1] - 1 for s in batch)
 

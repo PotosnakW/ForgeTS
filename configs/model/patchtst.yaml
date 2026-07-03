@@ -15,6 +15,7 @@ stride: 1
 hidden_size: 256
 n_layers: 4
 n_heads: 4
+nf: 129280 # (context_len  - patch_len + 1) * hidden_size
 linear_hidden_size: 1024
 dropout: 0.1
 head_dropout: False
@@ -33,5 +34,8 @@ activation: 'gelu'
 pre_norm: False
 store_attn: False
 
+# Optional efficiencies
+decode_fcd_size: -1
+
 # MICA variants
-infini_mixer_type: none
+mica_mixer_type: none

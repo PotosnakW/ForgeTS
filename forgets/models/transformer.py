@@ -21,6 +21,7 @@ class Model(nn.Module):
         self.patch_num = patch_num
         config.nf = config.nf
         self.c_out = config.c_out
+        self.decode_fcd_size = getattr(config, "decode_fcd_size", -1)
 
         self.tokenizer = BaseTokenizer().get_tokenizer(config=config)
         self.input_layer = BaseInputLayer().get_input_layer(config=config)
@@ -74,39 +75,45 @@ class Model(nn.Module):
             channel_mask = channel_mask,
         )
 
-        # standard: [B*C, 1, P, d_model]
-        # forking:  [B*C, T, P, d_model]]
-        enc_out    = self._fs_unfold(enc_out)                           # [B*C, T, P, d]
+            # get raw decoder output — either all at once, or chunked internally
+        if self.decode_fcd_size == -1:
+            dec_out = self._decode_full(enc_out, key_padding_mask, horizon)
+        else:
+            dec_out = self._decode_chunked(enc_out, key_padding_mask, horizon, fcd_samples)
 
-        dec_out = self.decoder(
-            x = enc_out,   # [B*C, T, d] — memory (keys/values)
-            key_padding_mask = key_padding_mask,
-            horizon = horizon,
-        )
-        
         dec_out = dec_out.reshape(batch_size, n_channels, fcd_samples, *dec_out.shape[2:])
-        output  = self.output_layer(dec_out)                        # [B*C, T, H*c_out] or [B*C, T, K, O*c_out]
-        output  = output.reshape(batch_size, n_channels, fcd_samples, -1, self.c_out)  # [B, C, T, K*O, c_out]
-        output  = output[:, :, :, :horizon, :]                      # [B, C, T, H, c_out]
+        output = self.output_layer(dec_out)
+        output = output.reshape(batch_size, n_channels, fcd_samples, -1, self.c_out)
+        output = output[:, :, :, :horizon, :]
 
         return output
 
-    def _fs_unfold(self, enc_out: torch.Tensor) -> torch.Tensor:
-        """
-        enc_out : [B*C, P_std+T-1, d_model]   T inferred from enc_out shape
-        returns : [B*C, T, H*c_out]
+    def _decode_full(self, enc_out, key_padding_mask, horizon) -> torch.Tensor:
+        """Compute-efficient: one decoder call over all origins. Current/original behavior."""
+        enc_windows = self._fs_unfold(enc_out)   # [B*C, T, P, d] — full unfold, one shot
+        return self.decoder(x=enc_windows, key_padding_mask=key_padding_mask, horizon=horizon)
 
-        Slides a P_std-patch window over P_total encoder patches → T predictions.
-        T is derived at runtime from enc_out so fcd_samples=-1 (variable T) works.
+    def _decode_chunked(self, enc_out, key_padding_mask, horizon, fcd_samples) -> torch.Tensor:
+        """Memory-efficient: loops decoder calls over origin windows of decode_chunk_size."""
+        outs = []
+        for c0 in range(0, fcd_samples, self.decode_fcd_size):
+            c1 = min(c0 + self.decode_fcd_size, fcd_samples)
+            enc_window = self._fs_unfold(enc_out, window_offset=c0, n_windows=c1 - c0)
+            outs.append(self.decoder(x=enc_window, key_padding_mask=key_padding_mask, horizon=horizon))
+        return torch.cat(outs, dim=1)   # concat along origin dim, still raw dec_out shape
+
+    def _fs_unfold(self, enc_out, window_offset=0, n_windows=None):
         """
-        _, patch_num_inp, _ = enc_out.shape
-        enc_out = (
-            enc_out
-            .unfold(dimension=1, size=self.patch_num, step=1)  # [B*C, T, d_model, patch_num_inp]; step must equal 1
-            .permute(0, 1, 3, 2) # [B*C, T, patch_num_inp, d_model]
-            .contiguous()
-        )
-        return enc_out
+        enc_out : [B*C, patch_num_inp, d]
+        returns : [B*C, n_windows, patch_num, d]   (n_windows = all origins if unspecified)
+
+        Slicing happens before .contiguous() so chunked calls only materialize
+        their own window range, not the full origin dimension.
+        """
+        full = enc_out.unfold(dimension=1, size=self.patch_num, step=1).permute(0, 1, 3, 2)
+        if n_windows is None:
+            n_windows = full.shape[1]
+        return full[:, window_offset:window_offset + n_windows].contiguous()
 
 class Transformer(BaseModel):
     def __init__(self, config):

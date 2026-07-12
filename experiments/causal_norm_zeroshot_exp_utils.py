@@ -190,7 +190,78 @@ def timesfm_forecast_batch(model, ctx_matrix, h):
         normalize=False,
     )
     return np.array(point_forecasts)[:, :h]
+
+
+# ===========================================================================
+# Toto 2.0
+# ===========================================================================
+
+class IdentityScaler(torch.nn.Module):
+    """No-op replacement for Toto2's PatchedCausalStdScaler (loc=0, scale=1).
  
+    Toto 2.0 normally re-normalizes the context internally using an expanding
+    (causal) mean/std before applying arcsinh, then de-scales the output
+    quantiles with `sinh() * scale + loc`. That fights with the external
+    lag-norm / causal-norm stats already applied to ctx_matrix in
+    run_experiment_batched, so we swap it for a pass-through and let the
+    caller's own normalization be the only one in effect.
+    """
+    def forward(self, data, mask=None):
+        return data, torch.zeros_like(data), torch.ones_like(data)
+ 
+ 
+# Quantile levels returned by Toto2Model.forecast(): [0.1, ..., 0.9]
+TOTO_MEDIAN_IDX = 4
+TOTO_PATCH_SIZE = 32
+ 
+ 
+def init_toto(checkpoint="Datadog/Toto-2.0-22m", device="cpu"):
+    from toto2 import Toto2Model
+ 
+    model = Toto2Model.from_pretrained(checkpoint)
+    model = model.to(device).eval()
+    model.scaler = IdentityScaler()  # disable internal causal norm
+    return model
+ 
+ 
+def _pad_to_patch(ctx_matrix):
+    """Left-pad rows so length is a multiple of TOTO_PATCH_SIZE (>= 32).
+ 
+    Returns (padded_matrix, mask_matrix) both of shape (n, padded_len).
+    """
+    n, W = ctx_matrix.shape
+    min_len = max(TOTO_PATCH_SIZE,
+                  TOTO_PATCH_SIZE * ((W + TOTO_PATCH_SIZE - 1) // TOTO_PATCH_SIZE))
+    if W >= min_len:
+        return ctx_matrix, np.ones_like(ctx_matrix, dtype=bool)
+ 
+    pad_len = min_len - W
+    padded = np.concatenate([np.zeros((n, pad_len)), ctx_matrix], axis=1)
+    mask = np.concatenate([np.zeros((n, pad_len), dtype=bool),
+                           np.ones((n, W), dtype=bool)], axis=1)
+    return padded, mask
+ 
+ 
+def toto_forecast_batch(model, ctx_matrix, h, device="cpu"):
+    """Batch forecast: (n, W) -> (n, H)."""
+    ctx_padded, mask_np = _pad_to_patch(ctx_matrix)
+    has_padding = not mask_np.all()
+ 
+    target      = torch.tensor(ctx_padded, dtype=torch.float32, device=device).unsqueeze(1)  # (n, 1, W')
+    target_mask = torch.tensor(mask_np, device=device).unsqueeze(1)                          # (n, 1, W')
+    series_ids  = torch.zeros(target.shape[0], 1, dtype=torch.long, device=device)
+ 
+    with torch.no_grad():
+        quantiles = model.forecast(
+            {"target": target, "target_mask": target_mask, "series_ids": series_ids},
+            horizon=h,
+            decode_block_size=768,
+            has_missing_values=has_padding,
+        )
+    # quantiles: (9, batch, n_variates, horizon) -> median, drop n_variates dim
+    return quantiles[TOTO_MEDIAN_IDX, :, 0, :].cpu().numpy()
+ 
+
  
 # ===========================================================================
 # Dataset loaders

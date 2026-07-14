@@ -22,14 +22,13 @@ import pandas as pd
 import torch
 from joblib import Parallel, delayed
 from statsmodels.tsa.arima.model import ARIMA
-from chronos import Chronos2Pipeline
-import timesfm
- 
+
+
 # ---- repo-local import (adjust if your checkout lives elsewhere) ----------
 _REPO_ROOT = Path("/home/wpotosna/forgets")
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-from preprocessing.gluonts_preprocessor import gluonts_to_long_dataframe  # noqa: E402
+from preprocessing.gluonts_preprocessor import gluonts_to_long_dataframe
  
  
 # ===========================================================================
@@ -49,16 +48,16 @@ def run_experiment_batched(series, W, H, predict_batch_fn, step=None,
     if step is None:
         step = H
     T = len(series)
-    min_origin = max(W, T - 2 * H + 1) if test_only else W
-    starts_idx = np.arange(min_origin, T - H, step)
-    n = len(starts_idx)
+    min_origin = T - 2*H + 1 
+    starts_idx = np.arange(T - 2*H + 1, T - H, step=1)
+    n = (T - H) - (T - 2*H + 1)  
     if n == 0:
         return None
  
     ctx_mat = np.stack([series[idx - W: idx] for idx in starts_idx])
     fut_mat = np.stack([series[idx: idx + H] for idx in starts_idx])
  
-    # lag-aware ("leaky") norm: stats from the context window itself
+    # lag norm: stats from the context window itself
     mu_lag = ctx_mat.mean(axis=1)
     sig_lag = np.clip(ctx_mat.std(axis=1), 1e-6, None)
  
@@ -144,6 +143,7 @@ class IdentityInstanceNorm(torch.nn.Module):
  
  
 def init_chronos(device="cuda:0"):
+    from chronos import Chronos2Pipeline
     pipeline = Chronos2Pipeline.from_pretrained(
         "amazon/chronos-2",
         device_map=device,
@@ -153,11 +153,11 @@ def init_chronos(device="cuda:0"):
     return pipeline
  
  
-def chronos_forecast_batch(pipeline, ctx_matrix, h):
+def chronos_forecast_batch(pipeline, ctx_matrix, h, device="cuda:0"):
     ctx_tensor = (
         torch.tensor(ctx_matrix, dtype=torch.float32)
         .unsqueeze(1)
-        .to(pipeline.device)
+        .to(device)
     )
     with torch.no_grad():
         forecast = pipeline.predict(ctx_tensor, prediction_length=h)
@@ -167,12 +167,13 @@ def chronos_forecast_batch(pipeline, ctx_matrix, h):
 # ===========================================================================
 # TimesFM
 # ===========================================================================
-def init_timesfm():
+def init_timesfm(H=128):
+    import timesfm
     model = timesfm.TimesFm(
         hparams=timesfm.TimesFmHparams(
             backend="gpu",
             per_core_batch_size=32,
-            horizon_len=128,
+            horizon_len=H,
         ),
         checkpoint=timesfm.TimesFmCheckpoint(
             huggingface_repo_id="google/timesfm-1.0-200m-pytorch"

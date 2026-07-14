@@ -29,6 +29,8 @@ from causal_norm_zeroshot_exp_utils import (
     chronos_forecast_batch,
     init_timesfm,
     timesfm_forecast_batch,
+    init_toto,
+    toto_forecast_batch,
     make_gpu_batched_fn,
     load_m4,
     load_favorita,
@@ -51,8 +53,8 @@ def main():
                    help="Evaluate only on forking-sequences test partition "
                         "Y[-2H+1:] (at most H origins per series)")
     p.add_argument("--max-series", type=int, default=None)
-    p.add_argument("--methods", nargs="+", default=["arima", "chronos", "timesfm"],
-                   choices=["arima", "chronos", "timesfm"])
+    p.add_argument("--methods", nargs="+", default=["arima", "chronos", "timesfm", "toto"],
+                   choices=["arima", "chronos", "timesfm", "toto"])
     p.add_argument("--batch-size", type=int, default=64,
                    help="GPU batch size for Chronos-2 / TimesFM")
     p.add_argument("--arima-n-jobs", type=int, default=-1,
@@ -82,12 +84,18 @@ def main():
     if "chronos" in args.methods:
         pipeline = init_chronos(device=args.device)
         forecast_fns["chronos"] = make_gpu_batched_fn(
-            functools.partial(chronos_forecast_batch, pipeline), args.batch_size
+            functools.partial(chronos_forecast_batch, pipeline, device=args.device),
+            args.batch_size,
         )
     if "timesfm" in args.methods:
-        tfm = init_timesfm()
+        tfm = init_timesfm(H=args.H)
         forecast_fns["timesfm"] = make_gpu_batched_fn(
             functools.partial(timesfm_forecast_batch, tfm), args.batch_size
+        )
+    if "toto" in args.methods:
+        tfm = init_toto()
+        forecast_fns["toto"] = make_gpu_batched_fn(
+            functools.partial(toto_forecast_batch, tfm), args.batch_size
         )
  
     for method in forecast_fns:
@@ -130,7 +138,8 @@ def main():
         if s_i % 10 == 0 or s_i == n:
             print(f"[{s_i}/{n}] series processed")
  
-    results_path = out_dir / f"results_{args.dataset}.pkl"
+    methods_tag = "-".join(args.methods)
+    results_path = out_dir / f"results_{args.dataset}_{methods_tag}.pkl"
     with open(results_path, "wb") as f:
         pickle.dump({"dataset": args.dataset, "W": args.W, "H": args.H,
                       "step": step, "test_only": args.test_only,

@@ -52,7 +52,6 @@ def main():
     p.add_argument("--test-only", action="store_true", default=False,
                    help="Evaluate only on forking-sequences test partition "
                         "Y[-2H+1:] (at most H origins per series)")
-    p.add_argument("--max-series", type=int, default=None)
     p.add_argument("--methods", nargs="+", default=["arima", "chronos", "timesfm", "toto"],
                    choices=["arima", "chronos", "timesfm", "toto"])
     p.add_argument("--batch-size", type=int, default=64,
@@ -72,9 +71,9 @@ def main():
  
     # ---- load data ----
     if args.dataset == "favorita":
-        all_series = load_favorita(args.favorita_csv, max_series=args.max_series)
+        all_series = load_favorita(args.favorita_csv)
     else:
-        all_series = load_m4(args.dataset, max_series=args.max_series)
+        all_series = load_m4(args.dataset)
     print(f"Loaded {len(all_series)} series from '{args.dataset}'")
  
     # ---- build forecast functions (heavy models loaded once) ----

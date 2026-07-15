@@ -48,9 +48,9 @@ def run_experiment_batched(series, W, H, predict_batch_fn, step=None,
     if step is None:
         step = H
     T = len(series)
-    min_origin = T - 2*H + 1 
-    starts_idx = np.arange(T - 2*H + 1, T - H, step=1)
-    n = (T - H) - (T - 2*H + 1)  
+    min_origin = T - 2 * H + 1
+    starts_idx = np.arange(min_origin, T - H + 1, step=1)
+    n = len(starts_idx)
     if n == 0:
         return None
  
@@ -267,20 +267,17 @@ def toto_forecast_batch(model, ctx_matrix, h, device="cpu"):
 # ===========================================================================
 # Dataset loaders
 # ===========================================================================
-def load_m4(dataset_name: str, max_series: int | None = None) -> dict[str, np.ndarray]:
+def load_m4(dataset_name: str) -> dict[str, np.ndarray]:
     df = gluonts_to_long_dataframe(dataset_name=dataset_name, split="train_test")
     df = df.sort_values(["unique_id", "ds"])
     series = {}
     for uid, g in df.groupby("unique_id"):
         series[uid] = g["y"].to_numpy(dtype=np.float64)
-        if max_series is not None and len(series) >= max_series:
-            break
     return series
  
  
 def load_favorita(
     csv_path: str,
-    max_series: int | None = None,
     min_length: int = 60,
 ) -> dict[str, np.ndarray]:
     usecols = ["date", "store_nbr", "item_nbr", "unit_sales"]
@@ -294,7 +291,5 @@ def load_favorita(
         if len(y) < min_length:
             continue
         series[uid] = y
-        if max_series is not None and len(series) >= max_series:
-            break
     return series
  

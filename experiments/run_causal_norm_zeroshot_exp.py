@@ -21,6 +21,7 @@ import argparse
 import pickle
 import traceback
 from pathlib import Path
+from tqdm import tqdm
 
 from causal_norm_zeroshot_exp_utils import (
     run_experiment_batched,
@@ -103,8 +104,8 @@ def main():
     # ---- run ----
     summary = []
     n = len(all_series)
-    for s_i, (uid, series) in enumerate(all_series.items(), start=1):
-        if len(series) <= args.W + args.H:
+    for s_i, (uid, series) in enumerate(tqdm(all_series.items(), desc=args.dataset), start=1):
+        if len(series) <= 2 * args.H - 1:
             print(f"[{s_i}/{n}] skip {uid}: too short ({len(series)} pts)")
             continue
  

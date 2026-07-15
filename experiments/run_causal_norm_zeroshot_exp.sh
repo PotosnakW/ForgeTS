@@ -35,109 +35,109 @@ METHODS="toto" #"arima chronos timesfm toto"
 # ===========================  M1  ==========================================
 for m in $METHODS; do
 should_run m1 "$m" && \
-run_py "$m" --dataset m1_yearly    --W 8  --H 6  --step 1 \
+run_py "$m" --dataset m1_yearly    --W 12 --H 6  --step 1 \
     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
 done
 
-# for m in $METHODS; do
-# should_run m1 "$m" && \
-# run_py "$m" --dataset m1_quarterly --W 8  --H 8  --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+for m in $METHODS; do
+should_run m1 "$m" && \
+run_py "$m" --dataset m1_quarterly --W 16 --H 8  --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# for m in $METHODS; do
-# should_run m1 "$m" && \
-# run_py "$m" --dataset m1_monthly   --W 24 --H 18 --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+for m in $METHODS; do
+should_run m1 "$m" && \
+run_py "$m" --dataset m1_monthly   --W 36 --H 18 --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# # ===========================  M3  ==========================================
-# for m in $METHODS; do
-# should_run m3 "$m" && \
-# run_py "$m" --dataset m3_yearly    --W 12 --H 6  --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+# ===========================  M3  ==========================================
+for m in $METHODS; do
+should_run m3 "$m" && \
+run_py "$m" --dataset m3_yearly    --W 12 --H 6  --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# for m in $METHODS; do
-# should_run m3 "$m" && \
-# run_py "$m" --dataset m3_quarterly --W 12 --H 8  --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+for m in $METHODS; do
+should_run m3 "$m" && \
+run_py "$m" --dataset m3_quarterly --W 16 --H 8  --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# for m in $METHODS; do
-# should_run m3 "$m" && \
-# run_py "$m" --dataset m3_monthly   --W 36 --H 18 --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+for m in $METHODS; do
+should_run m3 "$m" && \
+run_py "$m" --dataset m3_monthly   --W 36 --H 18 --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# for m in $METHODS; do
-# should_run m3 "$m" && \
-# run_py "$m" --dataset m3_other     --W 16 --H 8  --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+for m in $METHODS; do
+should_run m3 "$m" && \
+run_py "$m" --dataset m3_other     --W 16 --H 8  --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# # ===========================  M4  ==========================================
-# for m in $METHODS; do
-# should_run m4 "$m" && \
-# run_py "$m" --dataset m4_yearly    --W 12  --H 6  --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+# ===========================  M4  ==========================================
+for m in $METHODS; do
+should_run m4 "$m" && \
+run_py "$m" --dataset m4_yearly    --W 12 --H 6  --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# for m in $METHODS; do
-# should_run m4 "$m" && \
-# run_py "$m" --dataset m4_quarterly --W 12  --H 8  --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+for m in $METHODS; do
+should_run m4 "$m" && \
+run_py "$m" --dataset m4_quarterly --W 16 --H 8  --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# for m in $METHODS; do
-# should_run m4 "$m" && \
-# run_py "$m" --dataset m4_monthly   --W 36  --H 18 --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+for m in $METHODS; do
+should_run m4 "$m" && \
+run_py "$m" --dataset m4_monthly   --W 36 --H 18 --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# for m in $METHODS; do
-# should_run m4 "$m" && \
-# run_py "$m" --dataset m4_weekly    --W 26  --H 13 --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+for m in $METHODS; do
+should_run m4 "$m" && \
+run_py "$m" --dataset m4_weekly    --W 26 --H 13 --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# for m in $METHODS; do
-# should_run m4 "$m" && \
-# run_py "$m" --dataset m4_daily     --W 28  --H 14 --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+for m in $METHODS; do
+should_run m4 "$m" && \
+run_py "$m" --dataset m4_daily     --W 28 --H 14 --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# for m in $METHODS; do
-# should_run m4 "$m" && \
-# run_py "$m" --dataset m4_hourly    --W 168 --H 48 --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+for m in $METHODS; do
+should_run m4 "$m" && \
+run_py "$m" --dataset m4_hourly    --W 96 --H 48 --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# # ===========================  Tourism  =====================================
-# for m in $METHODS; do
-# should_run tourism "$m" && \
-# run_py "$m" --dataset tourism_yearly    --W 4  --H 6  --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+# ===========================  Tourism  =====================================
+for m in $METHODS; do
+should_run tourism "$m" && \
+run_py "$m" --dataset tourism_yearly    --W 12 --H 6  --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# for m in $METHODS; do
-# should_run tourism "$m" && \
-# run_py "$m" --dataset tourism_quarterly --W 16 --H 8  --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+for m in $METHODS; do
+should_run tourism "$m" && \
+run_py "$m" --dataset tourism_quarterly --W 16 --H 8  --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# for m in $METHODS; do
-# should_run tourism "$m" && \
-# run_py "$m" --dataset tourism_monthly   --W 36 --H 18 --step 1 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+for m in $METHODS; do
+should_run tourism "$m" && \
+run_py "$m" --dataset tourism_monthly   --W 36 --H 18 --step 1 \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# # ===========================  Favorita  ====================================
-# for m in $METHODS; do
-# should_run favorita "$m" && \
-# run_py "$m" --dataset favorita --favorita-csv "$FAVORITA_CSV" \
-#     --W 90 --H 16 --step 1 --test-only --max-series 500 \
-#     --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
-# done
+# ===========================  Favorita  ====================================
+for m in $METHODS; do
+should_run favorita "$m" && \
+run_py "$m" --dataset favorita --favorita-csv "$FAVORITA_CSV" \
+    --W 32 --H 16 --step 1 --test-only \
+    --out-dir "$OUTDIR" --device "$DEVICE" --batch-size "$BS"
+done
 
-# echo "Done."
+echo "Done."

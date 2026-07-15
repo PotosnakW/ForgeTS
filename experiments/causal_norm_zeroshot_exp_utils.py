@@ -34,7 +34,7 @@ from preprocessing.gluonts_preprocessor import gluonts_to_long_dataframe
 # ===========================================================================
 # Core expanding-window experiment
 # ===========================================================================
-def run_experiment_batched(series, W, H, predict_batch_fn, step=None,
+def run_experiment_batched(series, W, H, predict_batch_fn, step=1,
                            test_only=False):
     """
     predict_batch_fn(ctx_matrix: (n, W), h: int) -> (n, H) forecasts.
@@ -45,9 +45,16 @@ def run_experiment_batched(series, W, H, predict_batch_fn, step=None,
         Ytest = Y[-2H+1 :].  Origins range from max(W, T-2H+1) .. T-H,
         giving at most H windows (with step=1).
     """
-    if step is None:
-        step = H
     T = len(series)
+    if T < 2 * H - 1:
+        return None  # not enough data even for test partition
+
+    # left-pad if series too short for full context windows
+    pad_len = max(0, W + 2 * H - 1 - T)
+    if pad_len > 0:
+        series = np.concatenate([np.zeros(pad_len), series])
+        T = len(series)  # update T after padding
+
     min_origin = T - 2 * H + 1
     starts_idx = np.arange(min_origin, T - H + 1, step=1)
     n = len(starts_idx)
@@ -147,7 +154,7 @@ def init_chronos(device="cuda:0"):
     pipeline = Chronos2Pipeline.from_pretrained(
         "amazon/chronos-2",
         device_map=device,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
     )
     pipeline.model.instance_norm = IdentityInstanceNorm()
     return pipeline
@@ -157,11 +164,13 @@ def chronos_forecast_batch(pipeline, ctx_matrix, h, device="cuda:0"):
     ctx_tensor = (
         torch.tensor(ctx_matrix, dtype=torch.float32)
         .unsqueeze(1)
-        .to(device)
     )
     with torch.no_grad():
         forecast = pipeline.predict(ctx_tensor, prediction_length=h)
-    return forecast.median(dim=1).values.cpu().numpy()
+    if isinstance(forecast, list):
+        forecast = torch.stack(forecast)
+    arr = forecast.squeeze(1).cpu().numpy()
+    return np.median(arr, axis=1)
  
  
 # ===========================================================================

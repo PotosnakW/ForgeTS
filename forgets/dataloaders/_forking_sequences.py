@@ -415,16 +415,16 @@ class ForkingSequences:
         self,
         batch: Dict[str, Tensor],
         horizon: int,
-        fcd_samples: int=-1,
+        fcd_samples: int = -1,
     ) -> Dict[str, Tensor]:
 
         enc_block, mask_block, loss_mask_block, window_size, valid_fcds, window_start = self._strategy(
-            batch=batch, 
-            horizon=horizon, 
+            batch=batch,
+            horizon=horizon,
             fcd_samples=fcd_samples,
         )
 
-        enc_windows  = _unfold_windows(src=enc_block,  size=window_size, step=self.stride)
+        enc_windows = _unfold_windows(src=enc_block, size=window_size, step=self.stride)
         loss_mask_windows = _unfold_windows(src=loss_mask_block, size=window_size, step=self.stride)
 
         eff_L = window_size - horizon
@@ -440,44 +440,88 @@ class ForkingSequences:
             fcd_samples=valid_fcds,
             horizon=horizon,
         )
-    
-        if self.norm_window_size == -1:
-            # Causal stats on FULL original series
-            x_full = batch["x_enc"]                    # [B, S, C, X+1]
-            B, S = x_full.shape[:2]
-            mask_full = batch["available_mask"].unsqueeze(-1).expand_as(x_full)
-            counts = torch.cumsum(mask_full, dim=1).clamp(min=1)
-            mean = torch.cumsum(x_full * mask_full, dim=1) / counts
-            mean_sq = torch.cumsum((x_full ** 2) * mask_full, dim=1) / counts
-            stdev = torch.sqrt((mean_sq - mean ** 2).clamp(min=0) + 1e-5)
 
-            # ── Per-timestep stats for insample_y (norm path) ──
-            # insample_y = enc_block[:, :enc_size], which starts at window_start[b] in original series
-            ts_offsets = torch.arange(enc_size, device=x_full.device)
+        # ── Normalization stats ──
+        x_full = batch["x_enc"]
+        B, S = x_full.shape[:2]
+        mask_full = batch["available_mask"].unsqueeze(-1).expand_as(x_full)
 
-            if window_start is not None:
-                ts_indices = window_start.unsqueeze(1) + ts_offsets.unsqueeze(0)  # [B, enc_size]
-            else:
-                ts_indices = ts_offsets.unsqueeze(0).expand(B, -1)               # [B, enc_size]
+        stats = self._compute_norm_stats(x_full, mask_full, self.norm_window_size)
+        mean, stdev = stats['mean'], stats['stdev']
 
-            ts_idx = ts_indices.unsqueeze(-1).unsqueeze(-1).expand(B, enc_size, *mean.shape[2:])
-            out["causal_stats"] = {
-                'mean': mean.gather(1, ts_idx),      # [B, enc_size, C, X+1]
-                'stdev': stdev.gather(1, ts_idx),    # [B, enc_size, C, X+1]
-            }
+        # Per-timestep stats for norm
+        ts_offsets = torch.arange(enc_size, device=x_full.device)
+        if window_start is not None:
+            ts_indices = window_start.unsqueeze(1) + ts_offsets.unsqueeze(0)
+        else:
+            ts_indices = ts_offsets.unsqueeze(0).expand(B, -1)
+        ts_idx = ts_indices.unsqueeze(-1).unsqueeze(-1).expand(B, enc_size, *mean.shape[2:])
+        out["norm_stats"] = {
+            'mean': mean.gather(1, ts_idx),
+            'stdev': stdev.gather(1, ts_idx),
+        }
 
-            # ── Per-FCD stats for denorm/norm_targets ──
-            fcd_offsets = torch.arange(valid_fcds, device=x_full.device) * self.stride + eff_L - 1
-
-            if window_start is not None:
-                fcd_indices = window_start.unsqueeze(1) + fcd_offsets.unsqueeze(0)  # [B, n_fcds]
-            else:
-                fcd_indices = fcd_offsets.unsqueeze(0).expand(B, -1)                # [B, n_fcds]
-
-            fcd_idx = fcd_indices.unsqueeze(-1).unsqueeze(-1).expand(B, valid_fcds, *mean.shape[2:])
-            out["causal_fcd_stats"] = {
-                'mean': mean.gather(1, fcd_idx),     # [B, n_fcds, C, X+1]
-                'stdev': stdev.gather(1, fcd_idx),   # [B, n_fcds, C, X+1]
-            }
+        # Per-FCD stats for denorm/norm_targets
+        fcd_offsets = torch.arange(valid_fcds, device=x_full.device) * self.stride + eff_L - 1
+        if window_start is not None:
+            fcd_indices = window_start.unsqueeze(1) + fcd_offsets.unsqueeze(0)
+        else:
+            fcd_indices = fcd_offsets.unsqueeze(0).expand(B, -1)
+        fcd_idx = fcd_indices.unsqueeze(-1).unsqueeze(-1).expand(B, valid_fcds, *mean.shape[2:])
+        out["norm_fcd_stats"] = {
+            'mean': mean.gather(1, fcd_idx),
+            'stdev': stdev.gather(1, fcd_idx),
+        }
 
         return out
+
+
+    def _compute_norm_stats(
+        self,
+        x_full: Tensor,          # [B, S, C, X+1]
+        mask_full: Tensor,       # [B, S, C, X+1]
+        eps: float = 1e-5,
+    ) -> dict:
+        """
+        Compute per-timestep normalization statistics over the full series.
+
+        Parameters
+        ----------
+        x_full : [B, S, C, X+1]
+        mask_full : [B, S, C, X+1]  1=valid, 0=masked
+        norm_window_size : int
+            -1  → causal (cumulative from 0..t)
+            >0  → rolling window of this size ending at t
+
+        Returns
+        -------
+        dict with 'mean', 'stdev': each [B, S, C, X+1]
+        """
+        B, S, C, X1 = x_full.shape
+
+        if self.norm_window_size == -1:
+            # Causal: cumulative stats from 0..t
+            counts  = torch.cumsum(mask_full, dim=1).clamp(min=1)
+            mean    = torch.cumsum(x_full * mask_full, dim=1) / counts
+            mean_sq = torch.cumsum((x_full ** 2) * mask_full, dim=1) / counts
+        else:
+            # Windowed: rolling stats over last W steps ending at t
+            W = min(self.norm_window_size, S)
+            x_windows    = x_full.unfold(1, W, 1)        # [B, S-W+1, C, X+1, W]
+            mask_windows = mask_full.unfold(1, W, 1)      # [B, S-W+1, C, X+1, W]
+            counts  = mask_windows.sum(dim=-1).clamp(min=1)
+            mean    = (x_windows * mask_windows).sum(dim=-1) / counts
+            mean_sq = ((x_windows ** 2) * mask_windows).sum(dim=-1) / counts
+
+            # Pad early positions (0..W-2) with causal stats as fallback
+            if W > 1:
+                early_mask    = mask_full[:, :W-1]
+                early_counts  = torch.cumsum(early_mask, dim=1).clamp(min=1)
+                early_mean    = torch.cumsum(x_full[:, :W-1] * early_mask, dim=1) / early_counts
+                early_mean_sq = torch.cumsum((x_full[:, :W-1] ** 2) * early_mask, dim=1) / early_counts
+                mean    = torch.cat([early_mean, mean], dim=1)
+                mean_sq = torch.cat([early_mean_sq, mean_sq], dim=1)
+                counts  = torch.cat([early_counts, counts], dim=1)
+
+        stdev = torch.sqrt((mean_sq - mean ** 2).clamp(min=0) + eps)
+        return {'mean': mean, 'stdev': stdev}

@@ -99,17 +99,15 @@ class Scaler(nn.Module):
         return {'mean': mean, 'stdev': stdev}
 
     def forward(self, batch, norm_type):
-        causal_stats = batch.get("causal_stats", None)
-        causal_fcd_stats = batch.get("causal_fcd_stats", None)
+        norm_stats = batch.get("norm_stats", None)
+        fcd_stats  = batch.get("norm_fcd_stats", None)
 
-        
         if norm_type == 'norm':
-            x = batch["insample_y"].clone() # (B, T, C, X+1)
-            mask = batch["available_mask"].unsqueeze(-1).expand_as(x) # (B, T, C, X+1)
-            if causal_stats is not None:
-                # Use pre-computed causal stats from full series
-                self.stats = causal_stats
+            x = batch["insample_y"].clone()
+            if norm_stats is not None:
+                self.stats = norm_stats
             elif self.scaler_type != 'none':
+                mask = batch["available_mask"].unsqueeze(-1).expand_as(x)
                 self.stats = self._get_statistics(x, mask)
             else:
                 self.stats = {}
@@ -117,12 +115,12 @@ class Scaler(nn.Module):
         elif norm_type == 'denorm':
             if not hasattr(self, 'stats'):
                 raise RuntimeError("denorm called before norm — stats not computed yet")
-            x = batch["preds"].clone()                             # (B, T, H, C, Q)
+            x = batch["preds"].clone()
 
         elif norm_type == 'norm_targets':
             if not hasattr(self, 'stats'):
                 raise RuntimeError("norm_targets called before norm — stats not computed yet")
-            x = batch["outsample_y"].clone()                       # (B, T, H, C)
+            x = batch["outsample_y"].clone()
 
         else:
             raise NotImplementedError(f"norm_type must be 'norm', 'denorm', or 'norm_targets', got '{norm_type}'")
@@ -135,7 +133,7 @@ class Scaler(nn.Module):
             affine_weight=self.affine_weight,
             affine_bias=self.affine_bias,
             eps=self.eps,
-            causal_fcd_stats=causal_fcd_stats if norm_type != 'norm' else None,
+            fcd_stats=fcd_stats if norm_type != 'norm' else None,
         )
 
         if norm_type == 'norm':
@@ -146,3 +144,4 @@ class Scaler(nn.Module):
             batch["outsample_y"] = x_scaled
 
         return batch
+

@@ -104,12 +104,14 @@ class BaseModel(nn.Module):
             patch_len = config.patch_len,
             stride = config.stride,
             fcd_sampler = config.fcd_sampler,
+            norm_window_size = config.norm_window_size
         )
         self._fork_sequences_eval = ForkingSequences(
             context_len = config.context_len,
             fcd_samples = -1,
             patch_len = config.patch_len,
             stride = config.stride,
+            norm_window_size = config.norm_window_size
         )
 
         loss_fn = get_loss(config.loss)

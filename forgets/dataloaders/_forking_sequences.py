@@ -122,6 +122,7 @@ class ForkingSequences:
         patch_len: int = 1,
         stride: int = 1,
         fcd_sampler: str = "heterogeneous",
+        norm_window_size: int = -1,
     ):
         if fcd_sampler not in self.SAMPLERS:
             raise ValueError(
@@ -130,6 +131,8 @@ class ForkingSequences:
         self.context_len = context_len
         self.patch_len = patch_len
         self.stride = stride
+        self.norm_window_size = norm_window_size
+        self.causal_stats = None
         self.fcd_sampler = (
             self._heterogeneous_sampler
             if fcd_sampler == "heterogeneous"
@@ -299,7 +302,7 @@ class ForkingSequences:
         )
         window_size = self.context_len + horizon
         
-        return enc_block, mask_block, loss_mask_block, window_size, fcd_samples
+        return enc_block, mask_block, loss_mask_block, window_size, fcd_samples, window_start
 
     def _all_fcds_fixed_context(
         self, 
@@ -327,7 +330,7 @@ class ForkingSequences:
         window_size = self.context_len + horizon
         valid_fcds = (T - self.context_len - horizon) // self.stride + 1
 
-        return enc_block, mask_block, loss_mask_block, window_size, valid_fcds
+        return enc_block, mask_block, loss_mask_block, window_size, valid_fcds, None
 
     def _sampled_fcds_full_context(
         self, 
@@ -377,7 +380,7 @@ class ForkingSequences:
         loss_mask_block = loss_mask[:, :block_end]
         window_size = block_end - (fcd_samples - 1) * self.stride
 
-        return enc_block, mask_block, loss_mask_block, window_size, fcd_samples
+        return enc_block, mask_block, loss_mask_block, window_size, fcd_samples, window_start
 
     def _all_fcds_full_context(
         self, 
@@ -406,7 +409,7 @@ class ForkingSequences:
         window_size = self.patch_len + horizon
         valid_fcds = (T - self.patch_len - horizon) // self.stride + 1
 
-        return enc_block, mask_block, loss_mask_block, window_size, valid_fcds
+        return enc_block, mask_block, loss_mask_block, window_size, valid_fcds, None
 
     def __call__(
         self,
@@ -415,7 +418,7 @@ class ForkingSequences:
         fcd_samples: int=-1,
     ) -> Dict[str, Tensor]:
 
-        enc_block, mask_block, loss_mask_block, window_size, valid_fcds = self._strategy(
+        enc_block, mask_block, loss_mask_block, window_size, valid_fcds, window_start = self._strategy(
             batch=batch, 
             horizon=horizon, 
             fcd_samples=fcd_samples,
@@ -429,14 +432,52 @@ class ForkingSequences:
         enc_size = enc_block.shape[1] - horizon
 
         out = dict(
-            insample_y = enc_block[:, :enc_size],
-            outsample_y = enc_windows[:, :, eff_L:, :, 0],
-            outsample_mask = outsample_mask,
-            available_mask = mask_block[:, :enc_size], # [B, T, C]
-            channel_mask = batch['channel_mask'], # [B, C]
-            fcd_samples = valid_fcds,
-            horizon = horizon,
+            insample_y=enc_block[:, :enc_size],
+            outsample_y=enc_windows[:, :, eff_L:, :, 0],
+            outsample_mask=outsample_mask,
+            available_mask=mask_block[:, :enc_size],
+            channel_mask=batch['channel_mask'],
+            fcd_samples=valid_fcds,
+            horizon=horizon,
         )
-        # if hist_mask is not None:
-        #     out["hist_mask"] = hist_mask
+    
+        if self.norm_window_size == -1:
+            # Causal stats on FULL original series
+            x_full = batch["x_enc"]                    # [B, S, C, X+1]
+            B, S = x_full.shape[:2]
+            mask_full = batch["available_mask"].unsqueeze(-1).expand_as(x_full)
+            counts = torch.cumsum(mask_full, dim=1).clamp(min=1)
+            mean = torch.cumsum(x_full * mask_full, dim=1) / counts
+            mean_sq = torch.cumsum((x_full ** 2) * mask_full, dim=1) / counts
+            stdev = torch.sqrt((mean_sq - mean ** 2).clamp(min=0) + 1e-5)
+
+            # ── Per-timestep stats for insample_y (norm path) ──
+            # insample_y = enc_block[:, :enc_size], which starts at window_start[b] in original series
+            ts_offsets = torch.arange(enc_size, device=x_full.device)
+
+            if window_start is not None:
+                ts_indices = window_start.unsqueeze(1) + ts_offsets.unsqueeze(0)  # [B, enc_size]
+            else:
+                ts_indices = ts_offsets.unsqueeze(0).expand(B, -1)               # [B, enc_size]
+
+            ts_idx = ts_indices.unsqueeze(-1).unsqueeze(-1).expand(B, enc_size, *mean.shape[2:])
+            out["causal_stats"] = {
+                'mean': mean.gather(1, ts_idx),      # [B, enc_size, C, X+1]
+                'stdev': stdev.gather(1, ts_idx),    # [B, enc_size, C, X+1]
+            }
+
+            # ── Per-FCD stats for denorm/norm_targets ──
+            fcd_offsets = torch.arange(valid_fcds, device=x_full.device) * self.stride + eff_L - 1
+
+            if window_start is not None:
+                fcd_indices = window_start.unsqueeze(1) + fcd_offsets.unsqueeze(0)  # [B, n_fcds]
+            else:
+                fcd_indices = fcd_offsets.unsqueeze(0).expand(B, -1)                # [B, n_fcds]
+
+            fcd_idx = fcd_indices.unsqueeze(-1).unsqueeze(-1).expand(B, valid_fcds, *mean.shape[2:])
+            out["causal_fcd_stats"] = {
+                'mean': mean.gather(1, fcd_idx),     # [B, n_fcds, C, X+1]
+                'stdev': stdev.gather(1, fcd_idx),   # [B, n_fcds, C, X+1]
+            }
+
         return out

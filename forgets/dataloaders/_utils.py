@@ -43,16 +43,31 @@ def _split_df(
 
 
 def _split_per_series(df, val_size, test_size):
+    """
+    Per series: take the last test_size rows as test, whatever's left (up to
+    val_size) as val, and anything remaining as train. Series too short even
+    for test_size are dropped outright — train/val naturally end up empty
+    (rather than dropped) when there's leftover for val but none for train,
+    or leftover for neither; downstream padding (see PerSeriesDataset) treats
+    empty/short train and val the same as any other short series.
+    """
+    lengths = df.groupby("unique_id")["ds"].transform("count")
+    insufficient = df.loc[lengths < test_size, "unique_id"].unique()
+    if len(insufficient) > 0:
+        warnings.warn(
+            f"Dropping {len(insufficient)} series with fewer than "
+            f"test_size ({test_size}) timesteps: {sorted(insufficient)}"
+        )
+    df = df[lengths >= test_size]
+
     def label(g):
         n = len(g)
-        if val_size + test_size >= n:
-            raise ValueError(
-                f"Series '{g['unique_id'].iloc[0]}' has {n} timesteps but "
-                f"val_size ({val_size}) + test_size ({test_size}) = {val_size + test_size}."
-            )
+        leftover = n - test_size
+        val_n = min(val_size, leftover)
+        train_n = leftover - val_n
         return g.assign(_split=(
-            ["train"] * (n - val_size - test_size)
-            + ["val"]  * val_size
+            ["train"] * train_n
+            + ["val"]  * val_n
             + ["test"] * test_size
         ))
     df = df.groupby("unique_id", group_keys=False).apply(label)

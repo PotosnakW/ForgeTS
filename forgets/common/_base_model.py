@@ -275,27 +275,54 @@ class BaseModel(nn.Module):
 
         results = {}
         for raw_batch in tqdm(loader, desc="Predicting"):
-            step           = self.predict_step(raw_batch)
-            pred           = step["preds"]
-            targets        = step["targets"]
-            outsample_mask = step["outsample_mask"]
-            dataset_names  = raw_batch.get("dataset_name", ["unknown"] * pred.shape[0])
-            channel_ids    = raw_batch.get("channel_ids",  [None]      * pred.shape[0])
+            step            = self.predict_step(raw_batch)
+            pred            = step["preds"]
+            targets         = step["targets"]
+            outsample_mask  = step["outsample_mask"]
+            dataset_names   = raw_batch.get("dataset_name",   ["unknown"] * pred.shape[0])
+            channel_ids     = raw_batch.get("channel_ids",    [None]      * pred.shape[0])
+            is_multivariate = raw_batch.get("is_multivariate", False)
 
             for b in range(pred.shape[0]):
                 name   = dataset_names[b]
-                n_real = len(channel_ids[b]) if channel_ids[b] is not None else pred.shape[3]
-                if name not in results:
-                    results[name] = {"channel_ids": channel_ids[b], "preds": [], "targets": [], "outsample_mask": []}
-                results[name]["preds"].append(pred[b, :, :, :n_real, :])
-                results[name]["targets"].append(targets[b, :, :, :n_real])
-                if outsample_mask is not None:
-                    results[name]["outsample_mask"].append(outsample_mask[b, :, :, :n_real])
+                ids    = channel_ids[b]
+                n_real = len(ids) if ids is not None else pred.shape[3]
+
+                p = pred[b, :, :, :n_real, :]
+                t = targets[b, :, :, :n_real]
+                m = outsample_mask[b, :, :, :n_real] if outsample_mask is not None else None
+
+                if is_multivariate:
+                    # one dataset = one tensor set spanning all its channels (C axis).
+                    bucket = results.setdefault(
+                        name, {"channel_ids": ids, "preds": [], "targets": [], "outsample_mask": []}
+                    )
+                    bucket["preds"].append(p)
+                    bucket["targets"].append(t)
+                    if m is not None:
+                        bucket["outsample_mask"].append(m)
+                else:
+                    # per-series: exactly one channel per sample — squeeze it out
+                    # and nest by unique_id instead of flattening series together.
+                    uid   = ids[0] if ids else name
+                    entry = results.setdefault(name, {}).setdefault(
+                        uid, {"preds": [], "targets": [], "outsample_mask": []}
+                    )
+                    entry["preds"].append(p[:, :, 0, :])   # [windows, horizon, quantiles]
+                    entry["targets"].append(t[:, :, 0])    # [windows, horizon]
+                    if m is not None:
+                        entry["outsample_mask"].append(m[:, :, 0])
 
         for name, d in results.items():
-            d["preds"]          = torch.cat(d["preds"],          dim=0)
-            d["targets"]        = torch.cat(d["targets"],        dim=0)
-            d["outsample_mask"] = torch.cat(d["outsample_mask"], dim=0) if d["outsample_mask"] else None
+            if "preds" in d:
+                d["preds"]          = torch.cat(d["preds"],          dim=0)
+                d["targets"]        = torch.cat(d["targets"],        dim=0)
+                d["outsample_mask"] = torch.cat(d["outsample_mask"], dim=0) if d["outsample_mask"] else None
+            else:
+                for entry in d.values():
+                    entry["preds"]          = torch.cat(entry["preds"],          dim=0)
+                    entry["targets"]        = torch.cat(entry["targets"],        dim=0)
+                    entry["outsample_mask"] = torch.cat(entry["outsample_mask"], dim=0) if entry["outsample_mask"] else None
 
         return results
 

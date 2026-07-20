@@ -1,7 +1,7 @@
 path: "/home/wpotosna/m3_quarterly.csv"
 name: "m3_quarterly"
 horizon: 8
-context_len: 12
+context_len: 16
 val_size: 8
 test_size: 15
 weight: 1.0

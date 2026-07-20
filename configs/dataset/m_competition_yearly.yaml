@@ -1,5 +1,5 @@
-horizon_override: 12
-context_len_override: 24
+horizon_override: 6
+context_len_override: 12
 train:
   - ${load:configs/dataset/sources/m1_yearly.yaml}
   - ${load:configs/dataset/sources/m3_yearly.yaml}

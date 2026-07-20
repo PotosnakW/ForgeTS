@@ -1,7 +1,7 @@
 path: "/home/wpotosna/m4_hourly.csv"
 name: "m4_hourly"
 horizon: 48
-context_len: 12
+context_len: 96
 val_size: 48
 test_size: 95
 weight: 1.0

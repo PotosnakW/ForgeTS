@@ -1,5 +1,5 @@
 path: "/home/wpotosna/m3_yearly.csv"
-name: "m1_yearly"
+name: "m3_yearly"
 horizon: 6
 context_len: 12
 val_size: 6

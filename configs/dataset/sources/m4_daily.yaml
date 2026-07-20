@@ -1,7 +1,7 @@
 path: "/home/wpotosna/m4_daily.csv"
 name: "m4_daily"
 horizon: 14
-context_len: 12
+context_len: 28
 val_size: 14
 test_size: 27
 weight: 1.0

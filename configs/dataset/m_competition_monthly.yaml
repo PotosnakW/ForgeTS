@@ -1,0 +1,19 @@
+horizon_override: 18
+context_len_override: 36
+train:
+  - ${load:configs/dataset/sources/m1_monthly.yaml}
+  - ${load:configs/dataset/sources/m3_monthly.yaml}
+  - ${load:configs/dataset/sources/m4_monthly.yaml}
+  - ${load:configs/dataset/sources/tourism_monthly.yaml}
+
+validation:
+  - ${load:configs/dataset/sources/m1_monthly.yaml}
+  - ${load:configs/dataset/sources/m3_monthly.yaml}
+  - ${load:configs/dataset/sources/m4_monthly.yaml}
+  - ${load:configs/dataset/sources/tourism_monthly.yaml}
+
+test:
+  - ${load:configs/dataset/sources/m1_monthly.yaml}
+  - ${load:configs/dataset/sources/m3_monthly.yaml}
+  - ${load:configs/dataset/sources/m4_monthly.yaml}
+  - ${load:configs/dataset/sources/tourism_monthly.yaml}

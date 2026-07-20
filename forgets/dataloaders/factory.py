@@ -97,9 +97,9 @@ class DataLoaderFactory:
             min_len = ctx + margin + horizon
         else:
             # split_size (val_size/test_size) is uniform across the entries
-            # feeding this loader (enforced in _make_eval_dataloader /
-            # _eval_loaders). This is the natural length a well-provisioned
-            # series already reaches on its own — context + one real target
+            # feeding this loader (enforced in _make_eval_dataloader). This
+            # is the natural length a well-provisioned series already
+            # reaches on its own — context + one real target
             # per split timestep — so _all_fcds_fixed_context's valid_fcds
             # comes out to split_size for every series, not just 1 for short
             # ones riding along in the same batch.
@@ -176,7 +176,7 @@ class DataLoaderFactory:
             if getattr(entry, "sharded_dir", None):
                 ds = ShardedTrainDataset(
                     data_dir    = entry.sharded_dir,
-                    context_len = getattr(mcfg, "context_len", -1),
+                    context_len = getattr(self.mcfg, "context_len", -1),
                     horizon     = entry.horizon,
                     rank        = getattr(self, "_rank", 0),
                     world_size  = getattr(self, "_world_size", 1),
@@ -464,28 +464,6 @@ class DataLoaderFactory:
     def test_dataloaders(self, distributed=False, rank=0, world_size=1):
         return {"test": self._make_eval_dataloader(self.dcfg.test, "test")}
 
-    def _eval_loaders(self, entries, split):
-        loaders = {}
-        for entry in entries:
-            entry = _to_cfg(entry)
-            ds = self._build_eval_dataset(entry, split)
-            loaders[entry.name] = DataLoader(
-                ds,
-                batch_size         = self.mcfg.valid_batch_size,
-                shuffle            = False,
-                sampler            = None,
-                num_workers        = self.mcfg.num_workers,
-                pin_memory         = True,
-                drop_last          = False,
-                collate_fn         = partial(
-                    self._full_series_collate_fn,
-                    for_training = False,
-                    split_size   = int(getattr(entry, f"{split}_size")),
-                ),
-                persistent_workers = self.mcfg.num_workers > 0,
-            )
-        return loaders
-    
     def _resolve_context_len(self):
         """
         Unlike horizon, context_len has no per-item mechanism (it's an

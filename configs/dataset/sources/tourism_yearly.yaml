@@ -1,0 +1,11 @@
+path: "/home/wpotosna/tourism_yearly.csv"
+name: "tourism_yearly"
+horizon: 6
+context_len: 12
+val_size: 6
+test_size: 11
+weight: 1.0
+hist_exog_cols: []
+futr_exog_cols: []
+stat_exog_cols: []
+multivariate: False

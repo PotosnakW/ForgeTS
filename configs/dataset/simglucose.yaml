@@ -1,4 +1,5 @@
 horizon_override: 6
+context_len_override: 12
 n_channels: 30
 train:
   - ${load:configs/dataset/sources/simglucose.yaml}

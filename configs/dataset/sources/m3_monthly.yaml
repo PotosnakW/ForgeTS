@@ -1,0 +1,11 @@
+path: "/home/wpotosna/m3_monthly.csv"
+name: "m3_monthly"
+horizon: 18
+context_len: 12
+val_size: 18
+test_size: 35
+weight: 1.0
+hist_exog_cols: []
+futr_exog_cols: []
+stat_exog_cols: []
+multivariate: False

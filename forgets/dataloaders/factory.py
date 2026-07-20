@@ -1,5 +1,6 @@
 from collections import defaultdict
-from typing import Dict
+from functools import partial
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -13,9 +14,16 @@ from ._utils import (
     _split_df,
     _extend_with_next_split,
     _pivot_to_arrays,
+    _series_arrays,
     _pad_left,
 )
-from ._dataset import _make_dataset, LazyDataset, LazyDatasetCache
+from ._dataset import (
+    _make_dataset,
+    _make_per_series_dataset,
+    LazyDataset,
+    LazyPerSeriesDataset,
+    LazyDatasetCache,
+)
 from ._samplers import HorizonBatchSampler
 
 
@@ -32,6 +40,7 @@ class DataLoaderFactory:
         self._lazy  = getattr(self.mcfg, "lazy_loading", True)
         self._dataset_cache = LazyDatasetCache(max_cached=max_cached) if self._lazy else None
 
+        self._resolve_context_len()
         self._build_train()
         self._validate_dataset_compatibility()
 
@@ -40,19 +49,62 @@ class DataLoaderFactory:
 
     def _arrays_from_df(self, df, entry):
         return _pivot_to_arrays(
-            df, 
-            entry.hist_exog_cols, 
-            entry.futr_exog_cols, 
+            df,
+            entry.hist_exog_cols,
+            entry.futr_exog_cols,
             entry.stat_exog_cols
         )
+
+    def _dataset_from_df(self, df, entry, is_multivariate):
+        """Build the eval Dataset for `df`, branching on multivariate vs per-series."""
+        if is_multivariate:
+            y, hist, futr, stat, channel_ids, available_mask, loss_mask = self._arrays_from_df(
+                df, entry
+            )
+            return _make_dataset(
+                y=y, hist=hist, futr=futr, stat=stat,
+                available_mask=available_mask, loss_mask=loss_mask,
+                channel_ids=channel_ids, mcfg=self.mcfg,
+                horizon=entry.horizon, name=entry.name,
+                is_multivariate=is_multivariate,
+            )
+        series = _series_arrays(
+            df,
+            list(entry.hist_exog_cols or []),
+            list(entry.futr_exog_cols or []),
+            list(entry.stat_exog_cols or []),
+        )
+        return _make_per_series_dataset(series, self.mcfg, entry.horizon, entry.name)
     
-    def _full_series_collate_fn(self, batch):
-        ctx = ctx = getattr(self.mcfg, "context_len", -1)
+    def _full_series_collate_fn(self, batch, for_training: bool, split_size: int = 0):
+        ctx = getattr(self.mcfg, "context_len", -1)
         patch_len = getattr(self.mcfg, "patch_len", 1)
         stride = getattr(self.mcfg, "stride", 1)
-    
+        horizon_override = getattr(self.mcfg, "horizon_override", None)
+
         lengths = [s["x_enc"].shape[0] for s in batch]
-        T_max = max(lengths + [ctx - patch_len]) if ctx != -1 else max(lengths)
+        horizon = int(horizon_override) if horizon_override else max(int(s["horizon"]) for s in batch)
+        if for_training:
+            # fcd_samples=-1 means "use every window" (_all_fcds_fixed_context,
+            # same requirement as eval: just context_len+horizon). fcd_samples>0
+            # means "sample N consecutive windows" (_sampled_fcds_fixed_context /
+            # _heterogeneous_sampler), which needs extra headroom for those N
+            # windows — matches _heterogeneous_sampler's own block_len, so its
+            # "series too short" check is the actual safety net, never a
+            # lower-level .unfold() crash.
+            fcd_samples = getattr(self.mcfg, "fcd_samples", 1)
+            margin = 0 if fcd_samples == -1 else (fcd_samples - 1) * stride
+            min_len = ctx + margin + horizon
+        else:
+            # split_size (val_size/test_size) is uniform across the entries
+            # feeding this loader (enforced in _make_eval_dataloader /
+            # _eval_loaders). This is the natural length a well-provisioned
+            # series already reaches on its own — context + one real target
+            # per split timestep — so _all_fcds_fixed_context's valid_fcds
+            # comes out to split_size for every series, not just 1 for short
+            # ones riding along in the same batch.
+            min_len = ctx + split_size + horizon - 1
+        T_max = max(lengths + [min_len]) if ctx != -1 else max(lengths)
         C_max  = max(s["x_enc"].shape[-2] for s in batch)
         Vh_max = max(s["x_enc"].shape[-1] - 1 for s in batch)
 
@@ -134,7 +186,12 @@ class DataLoaderFactory:
 
             if self._lazy:
                 # Lazy path: store a lightweight wrapper; data loads on first __getitem__
-                ds = LazyDataset(entry, self.mcfg, self._dataset_cache)
+                # (or, for per-series, on first __len__ — see LazyPerSeriesDataset).
+                ds = (
+                    LazyDataset(entry, self.mcfg, self._dataset_cache)
+                    if is_multivariate else
+                    LazyPerSeriesDataset(entry, self.mcfg, self._dataset_cache)
+                )
             else:
                 # Eager path: load everything into memory now (original behaviour)
                 df = _load_df(entry.path)
@@ -143,16 +200,25 @@ class DataLoaderFactory:
                 )
                 train_df = _extend_with_next_split(train_df, val_df, entry.horizon)
                 train_df["loss_mask"] = train_df["available_mask"]
-                y, hist, futr, stat, channel_ids, available_mask, loss_mask = self._arrays_from_df(
-                    train_df, entry
-                )
-                ds = _make_dataset(
-                    y=y, hist=hist, futr=futr, stat=stat,
-                    available_mask=available_mask, loss_mask=loss_mask,
-                    channel_ids=channel_ids, mcfg=self.mcfg,
-                    horizon=entry.horizon, name=entry.name,
-                    is_multivariate=is_multivariate,
-                )
+                if is_multivariate:
+                    y, hist, futr, stat, channel_ids, available_mask, loss_mask = self._arrays_from_df(
+                        train_df, entry
+                    )
+                    ds = _make_dataset(
+                        y=y, hist=hist, futr=futr, stat=stat,
+                        available_mask=available_mask, loss_mask=loss_mask,
+                        channel_ids=channel_ids, mcfg=self.mcfg,
+                        horizon=entry.horizon, name=entry.name,
+                        is_multivariate=is_multivariate,
+                    )
+                else:
+                    series = _series_arrays(
+                        train_df,
+                        list(entry.hist_exog_cols or []),
+                        list(entry.futr_exog_cols or []),
+                        list(entry.stat_exog_cols or []),
+                    )
+                    ds = _make_per_series_dataset(series, self.mcfg, entry.horizon, entry.name)
 
             self._horizon_groups[group_key].append((ds, entry.weight, entry.name))
 
@@ -211,16 +277,7 @@ class DataLoaderFactory:
             .reset_index(drop=True)
         )
 
-        y, hist, futr, stat, channel_ids, available_mask, loss_mask = self._arrays_from_df(
-            eval_df, entry
-        )
-        return _make_dataset(
-            y=y, hist=hist, futr=futr, stat=stat,
-            available_mask=available_mask, loss_mask=loss_mask,
-            channel_ids=channel_ids, mcfg=self.mcfg,
-            horizon=entry.horizon, name=entry.name,
-            is_multivariate=is_multivariate,
-        )
+        return self._dataset_from_df(eval_df, entry, is_multivariate)
 
     def _build_test_dataset(self, entry) -> Dataset:
         entry = _to_cfg(entry)
@@ -266,16 +323,7 @@ class DataLoaderFactory:
             .reset_index(drop=True)
         )
 
-        y, hist, futr, stat, channel_ids, available_mask, loss_mask = self._arrays_from_df(
-            eval_df, entry
-        )
-        return _make_dataset(
-            y=y, hist=hist, futr=futr, stat=stat,
-            available_mask=available_mask, loss_mask=loss_mask,
-            channel_ids=channel_ids, mcfg=self.mcfg,
-            horizon=entry.horizon, name=entry.name,
-            is_multivariate=is_multivariate,
-        )
+        return self._dataset_from_df(eval_df, entry, is_multivariate)
 
 
     def _make_train_batch_sampler(self, rank=0, world_size=1):
@@ -323,9 +371,23 @@ class DataLoaderFactory:
             batch_sampler      = batch_sampler,
             num_workers        = self.mcfg.num_workers,
             pin_memory         = True,
-            collate_fn         = self._full_series_collate_fn,
+            collate_fn         = partial(self._full_series_collate_fn, for_training=True),
             persistent_workers = self.mcfg.num_workers > 0,
         )
+
+    def _uniform_split_size(self, entries: List, split: str) -> int:
+        """val_size/test_size must match across every entry feeding one eval
+        loader — they share a single collate padding floor (context_len +
+        split_size + horizon - 1), which only makes sense as one number."""
+        attr = f"{split}_size"
+        sizes = {int(getattr(_to_cfg(e), attr)) for e in entries}
+        if len(sizes) > 1:
+            raise ValueError(
+                f"Entries feeding this '{split}' loader have different "
+                f"{attr} values: {sorted(sizes)}. All entries in "
+                f"dcfg.{split} must share the same {attr}."
+            )
+        return sizes.pop() if sizes else 0
 
     def _make_eval_dataloader(self, entries, split: str) -> DataLoader:
         horizon_override = getattr(self.mcfg, "horizon_override", None)
@@ -365,7 +427,11 @@ class DataLoaderFactory:
             batch_sampler      = sampler,
             num_workers        = self.mcfg.num_workers,
             pin_memory         = True,
-            collate_fn         = self._full_series_collate_fn,
+            collate_fn         = partial(
+                self._full_series_collate_fn,
+                for_training = False,
+                split_size   = self._uniform_split_size(entries, split),
+            ),
             persistent_workers = self.mcfg.num_workers > 0,
         )
 
@@ -401,6 +467,7 @@ class DataLoaderFactory:
     def _eval_loaders(self, entries, split):
         loaders = {}
         for entry in entries:
+            entry = _to_cfg(entry)
             ds = self._build_eval_dataset(entry, split)
             loaders[entry.name] = DataLoader(
                 ds,
@@ -410,11 +477,50 @@ class DataLoaderFactory:
                 num_workers        = self.mcfg.num_workers,
                 pin_memory         = True,
                 drop_last          = False,
-                collate_fn         = self._full_series_collate_fn,
+                collate_fn         = partial(
+                    self._full_series_collate_fn,
+                    for_training = False,
+                    split_size   = int(getattr(entry, f"{split}_size")),
+                ),
                 persistent_workers = self.mcfg.num_workers > 0,
             )
         return loaders
     
+    def _resolve_context_len(self):
+        """
+        Unlike horizon, context_len has no per-item mechanism (it's an
+        architectural constant — patch structure, nf — fixed once at model
+        construction, not something the model can flex per batch), so
+        nothing else ever sets self.mcfg.context_len. This is the one place
+        that does: context_len_override wins if set; otherwise every train
+        entry must agree on their own context_len, or it's a config error.
+        """
+        context_len_override = getattr(self.mcfg, "context_len_override", None)
+        if context_len_override:
+            self.mcfg.context_len = int(context_len_override)
+            return
+
+        values = {
+            int(v) for e in self.dcfg.train
+            if (v := getattr(_to_cfg(e), "context_len", None)) is not None
+        }
+
+        if not values:
+            raise ValueError(
+                "context_len is not set anywhere: no entry in dataset.train "
+                "defines context_len, and dataset.context_len_override is not "
+                "set. Set context_len on each dataset source "
+                "(configs/dataset/sources/*.yaml) or set context_len_override "
+                "in the dataset group config."
+            )
+        if len(values) > 1:
+            raise ValueError(
+                f"Dataset sources in dataset.train disagree on context_len: "
+                f"{sorted(values)}. Set context_len_override in the dataset "
+                f"group config to force one value across all of them."
+            )
+        self.mcfg.context_len = values.pop()
+
     def _validate_dataset_compatibility(self):
         all_horizons = set(horizon for horizon, _ in self._horizon_groups.keys())
         horizon_override = getattr(self.mcfg, "horizon_override", None)

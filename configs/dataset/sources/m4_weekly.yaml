@@ -1,0 +1,11 @@
+path: "/home/wpotosna/m4_weekly.csv"
+name: "m4_weekly"
+horizon: 13
+context_len: 12
+val_size: 13
+test_size: 25
+weight: 1.0
+hist_exog_cols: []
+futr_exog_cols: []
+stat_exog_cols: []
+multivariate: False

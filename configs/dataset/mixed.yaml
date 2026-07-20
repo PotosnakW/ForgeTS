@@ -1,4 +1,5 @@
 horizon_override: 12 #null
+context_len_override: 12 #null
 train:
   - ${load:configs/dataset/sources/simglucose.yaml}
   - ${load:configs/dataset/sources/iowa_plows.yaml}

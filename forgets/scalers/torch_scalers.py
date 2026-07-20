@@ -12,19 +12,19 @@ def _standardize(x, stats, stride, norm_type, **kwargs):
     affine_weight = kwargs['affine_weight']
     affine_bias   = kwargs['affine_bias']
     eps = kwargs['eps']
-    causal_fcd_stats = kwargs.get('causal_fcd_stats', None)
+    fcd_stats = kwargs.get('fcd_stats', None)
 
     if norm_type == 'norm':
         x = (x - mean) / stdev
         if affine_weight is not None:
             x = x * affine_weight + affine_bias
         return x
-    
+
     elif norm_type == 'denorm':
-        if causal_fcd_stats is not None:
+        if fcd_stats is not None:
             # Already gathered at FCD positions: [B, n_fcds, C, X+1]
-            fcd_mean  = causal_fcd_stats['mean'][:, :, :, 0:1].unsqueeze(2)
-            fcd_stdev = causal_fcd_stats['stdev'][:, :, :, 0:1].unsqueeze(2)
+            fcd_mean  = fcd_stats['mean'][:, :, :, 0:1].unsqueeze(2)
+            fcd_stdev = fcd_stats['stdev'][:, :, :, 0:1].unsqueeze(2)
         else:
             T = x.shape[1]
             fcd_mean  = mean[:, -T*stride::stride, :, 0:1].unsqueeze(2)
@@ -34,10 +34,10 @@ def _standardize(x, stats, stride, norm_type, **kwargs):
         return x * fcd_stdev + fcd_mean
 
     elif norm_type == 'norm_targets':
-        if causal_fcd_stats is not None:
+        if fcd_stats is not None:
             # Already gathered at FCD positions: [B, n_fcds, C, X+1]
-            fcd_mean  = causal_fcd_stats['mean'][:, :, :, 0].unsqueeze(2).expand_as(x)
-            fcd_stdev = causal_fcd_stats['stdev'][:, :, :, 0].unsqueeze(2).expand_as(x)
+            fcd_mean  = fcd_stats['mean'][:, :, :, 0].unsqueeze(2).expand_as(x)
+            fcd_stdev = fcd_stats['stdev'][:, :, :, 0].unsqueeze(2).expand_as(x)
         else:
             T = x.shape[1]
             fcd_mean  = mean[:, -T*stride::stride, :, 0].unsqueeze(2).expand_as(x)

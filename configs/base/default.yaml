@@ -5,7 +5,7 @@ seed: 1
 scaler_type: 'standard'
 
 # ── Loss ────────────────────────────────────────────
-loss_space: 'norm' #'denorm'
+loss_space: 'denorm' #'denorm'
 
 # ── DataLoader ──────────────────────────────────────────
 batch_size: 4

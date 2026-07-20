@@ -1,18 +1,19 @@
 horizon_override: 12 #null
+context_len_override: 12 #null
 train:
-  - ${load:configs/dataset/sources/m1_yearly.yaml}
+#  - ${load:configs/dataset/sources/m1_yearly.yaml}
   - ${load:configs/dataset/sources/m3_yearly.yaml}
-  - ${load:configs/dataset/sources/m4_yearly.yaml}
-  - ${load:configs/dataset/sources/tourism_yearly.yaml}
+#  - ${load:configs/dataset/sources/m4_yearly.yaml}
+#  - ${load:configs/dataset/sources/tourism_yearly.yaml}
 
 validation:
-  - ${load:configs/dataset/sources/m1_yearly.yaml}
+#  - ${load:configs/dataset/sources/m1_yearly.yaml}
   - ${load:configs/dataset/sources/m3_yearly.yaml}
-  - ${load:configs/dataset/sources/m4_yearly.yaml}
-  - ${load:configs/dataset/sources/tourism_yearly.yaml}
+#  - ${load:configs/dataset/sources/m4_yearly.yaml}
+#  - ${load:configs/dataset/sources/tourism_yearly.yaml}
 
 test:
-  - ${load:configs/dataset/sources/m1_yearly.yaml}
+ # - ${load:configs/dataset/sources/m1_yearly.yaml}
   - ${load:configs/dataset/sources/m3_yearly.yaml}
-  - ${load:configs/dataset/sources/m4_yearly.yaml}
-  - ${load:configs/dataset/sources/tourism_yearly.yaml}
+ # - ${load:configs/dataset/sources/m4_yearly.yaml}
+#  - ${load:configs/dataset/sources/tourism_yearly.yaml}

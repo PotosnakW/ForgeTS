@@ -7,7 +7,6 @@ decoder: none
 output_layer: linear_proj
 
 # cnn encoder
-context_len: 100
 hidden_size: 256
 dilations: [1, 2, 4, 8, 16] 
 in_channels: 1  # CI: always 1 (series fed in one at a time)

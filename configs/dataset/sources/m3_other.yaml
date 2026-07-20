@@ -1,0 +1,11 @@
+path: "/home/wpotosna/m3_other.csv"
+name: "m3_other"
+horizon: 8
+context_len: 12
+val_size: 8
+test_size: 15
+weight: 1.0
+hist_exog_cols: []
+futr_exog_cols: []
+stat_exog_cols: []
+multivariate: False

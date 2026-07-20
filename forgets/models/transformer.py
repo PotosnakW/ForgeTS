@@ -19,7 +19,10 @@ class Model(nn.Module):
         self.stride = config.stride
         patch_num = int((config.context_len - config.patch_len) / config.stride + 1)
         self.patch_num = patch_num
-        config.nf = config.nf
+        # nf is the flattened (patch_num * hidden_size) input width the output
+        # layer's linear projection expects — a function of context_len/patch_len/
+        # stride/hidden_size, not an independent hyperparameter to keep in sync by hand.
+        config.nf = patch_num * config.hidden_size
         self.c_out = config.c_out
         self.decode_fcd_size = getattr(config, "decode_fcd_size", -1)
 
@@ -158,11 +161,11 @@ class Transformer(BaseModel):
 
         forecast = self.model(
             x_enc = x_enc_in,
-            horizon=horizon, 
+            horizon=horizon,
             fcd_samples = batch.get("fcd_samples"),
             available_mask = available_mask, # [B, C, seq_len]
             channel_mask = channel_mask, # [B, C]
         )
         forecast = forecast.permute(0, 2, 3, 1, 4)        # [B, T, H, C, Q]
-    
+
         return forecast                                    # [B, T, H, C, Q]

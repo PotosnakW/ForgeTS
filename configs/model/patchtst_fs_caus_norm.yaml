@@ -9,7 +9,6 @@ output_layer: linear_proj   # not linear_projection
 fcd_samples: -1
 norm_window_size: -1 
 
-context_len: 512
 d_model: 256  # Dimension of the model, should be 256 for T5-tiny
 pe_type: 'sincos'
 learn_pe: False
@@ -18,7 +17,6 @@ stride: 1
 hidden_size: 256
 n_layers: 4
 n_heads: 4
-nf: 129280 # (context_len  - patch_len + 1) * hidden_size
 linear_hidden_size: 1024
 dropout: 0.1
 head_dropout: False
@@ -32,7 +30,7 @@ d_v: 32
 qkv_bias: False
 attn_dropout: False
 proj_dropout: 0.0
-norm: "BatchNorm"
+norm: "LayerNorm"
 activation: 'gelu'
 pre_norm: False
 store_attn: False

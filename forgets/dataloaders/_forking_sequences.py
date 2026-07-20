@@ -248,6 +248,19 @@ class ForkingSequences:
         sample_weights = time_mask.float().clone()
         sample_weights[:, max_start + 1:] = 0.0
 
+        # A series with no real timestep anywhere in [0, max_start] (e.g. a
+        # short, left-padded series where max_start is small and every
+        # candidate start position is itself padding) leaves that row all
+        # zero, which torch.multinomial can't sample from. Fall back to
+        # uniform over [0, max_start] for just that row — same fallback
+        # _homogeneous_sampler already applies, just per-series instead of
+        # batch-wide since each series samples its own window_start here.
+        zero_rows = sample_weights.sum(dim=1) == 0
+        if zero_rows.any():
+            fallback = torch.ones(S, device=sample_weights.device)
+            fallback[max_start + 1:] = 0.0
+            sample_weights[zero_rows] = fallback
+
         window_start = torch.multinomial(
             sample_weights, num_samples=1
         ).squeeze(1)
@@ -275,10 +288,10 @@ class ForkingSequences:
         #hist_mask = batch.get("hist_mask")
 
         B, T, C, _ = x_enc_full.shape
-        
+
         window_start, block_len = self.fcd_sampler(
-            available_mask=available_mask, 
-            channel_mask=channel_mask, 
+            available_mask=available_mask,
+            channel_mask=channel_mask,
             fcd_samples=fcd_samples,
             horizon=horizon,
         )
@@ -446,7 +459,7 @@ class ForkingSequences:
         B, S = x_full.shape[:2]
         mask_full = batch["available_mask"].unsqueeze(-1).expand_as(x_full)
 
-        stats = self._compute_norm_stats(x_full, mask_full, self.norm_window_size)
+        stats = self._compute_norm_stats(x_full, mask_full)
         mean, stdev = stats['mean'], stats['stdev']
 
         # Per-timestep stats for norm

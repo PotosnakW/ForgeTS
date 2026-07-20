@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from ._utils import _extend_with_next_split, _pivot_to_arrays, _split_df, _load_df
+from ._utils import _extend_with_next_split, _pivot_to_arrays, _series_arrays, _split_df, _load_df
 
 
 class SeriesMetadata:
@@ -150,6 +150,70 @@ def _make_dataset(
     )
 
 
+class PerSeriesDataset(Dataset):
+    """
+    One independent univariate series per item — the counterpart to
+    FullSeriesDataset for non-multivariate sources. Each series keeps its
+    own native length (no cross-series date alignment); left-padding to a
+    common length within a batch happens in the collate_fn, same as it
+    already does for multi-dataset batches (see _pad_left / _full_series_collate_fn).
+
+    The context_len+horizon minimum that FullSeriesDataset enforces doesn't
+    apply here: a short series is simply padded further, and ForkingSequences
+    already raises a clear error if a whole batch is still too short for the
+    configured context_len/fcd_samples/horizon.
+    """
+    def __init__(
+        self,
+        series: List[dict],
+        context_len: int,
+        horizon: int,
+        name: str = "",
+    ):
+        self.series = series
+        self.context_len = context_len
+        self.horizon = horizon
+        self.name = name
+
+    def __len__(self):
+        return len(self.series)
+
+    def __getitem__(self, idx):
+        s = self.series[idx]
+        T = s["y"].shape[0]
+
+        y_enc = torch.from_numpy(s["y"]).view(T, 1, 1)                 # [T, 1, 1]
+        hist  = torch.from_numpy(s["hist"]).unsqueeze(1)               # [T, 1, Vh]
+        x_enc = torch.cat([y_enc, hist], dim=-1) if hist.shape[-1] > 0 else y_enc
+        futr  = torch.from_numpy(s["futr"]).unsqueeze(1)               # [T, 1, Vf]
+        available_mask = torch.from_numpy(s["available_mask"]).unsqueeze(-1).contiguous()  # [T, 1]
+        loss_mask       = torch.from_numpy(s["loss_mask"]).unsqueeze(-1).contiguous()       # [T, 1]
+
+        out = dict(
+            x_enc           = x_enc,
+            x_futr          = futr,
+            available_mask  = available_mask,
+            loss_mask       = loss_mask,
+            series_len      = torch.tensor(T,       dtype=torch.long),
+            horizon         = torch.tensor(self.horizon, dtype=torch.long),
+            dataset_name    = self.name,
+            channel_ids     = [s["channel_id"]],
+            is_multivariate = False,
+        )
+        if s["stat"].shape[-1] > 0:
+            out["x_stat"] = torch.from_numpy(s["stat"]).unsqueeze(0)   # [1, n_stat]
+        return out
+
+
+def _make_per_series_dataset(series: List[dict], mcfg, horizon, name="") -> PerSeriesDataset:
+    return PerSeriesDataset(
+        series      = series,
+        context_len = getattr(mcfg, "context_len", -1),
+        horizon     = horizon,
+        name        = name,
+    )
+
+
 class LazyDatasetCache:
     """
     LRU cache of loaded FullSeriesDatasets, shared across all LazyDataset
@@ -186,24 +250,34 @@ class LazyDatasetCache:
             self._cache.move_to_end(key)
             return self._cache[key]
 
-    def _load(self, entry, mcfg) -> FullSeriesDataset:
+    def _load(self, entry, mcfg):
         df = _load_df(entry.path)
         train_df, val_df, _ = _split_df(df, entry.val_size, entry.test_size)
         train_df = _extend_with_next_split(train_df, val_df, entry.horizon)
         train_df["loss_mask"] = train_df["available_mask"]
-        y, hist, futr, stat, channel_ids, available_mask, loss_mask = _pivot_to_arrays(
+
+        if getattr(entry, "multivariate", False):
+            y, hist, futr, stat, channel_ids, available_mask, loss_mask = _pivot_to_arrays(
+                train_df,
+                list(entry.hist_exog_cols or []),
+                list(entry.futr_exog_cols or []),
+                list(entry.stat_exog_cols or []),
+            )
+            return _make_dataset(
+                y=y, hist=hist, futr=futr, stat=stat,
+                available_mask=available_mask, loss_mask=loss_mask,
+                channel_ids=channel_ids, mcfg=mcfg,
+                horizon=entry.horizon, name=entry.name,
+                is_multivariate=True,
+            )
+
+        series = _series_arrays(
             train_df,
             list(entry.hist_exog_cols or []),
             list(entry.futr_exog_cols or []),
             list(entry.stat_exog_cols or []),
         )
-        return _make_dataset(
-            y=y, hist=hist, futr=futr, stat=stat,
-            available_mask=available_mask, loss_mask=loss_mask,
-            channel_ids=channel_ids, mcfg=mcfg,
-            horizon=entry.horizon, name=entry.name,
-            is_multivariate=getattr(entry, "multivariate", False),
-        )
+        return _make_per_series_dataset(series, mcfg, entry.horizon, entry.name)
 
     def evict(self, name: str):
         """Manually evict a dataset by name (e.g. after an epoch)."""
@@ -238,3 +312,25 @@ class LazyDataset(Dataset):
     def __getitem__(self, idx):
         ds = self.cache.get(self.entry, self.mcfg)
         return ds[0]
+
+
+class LazyPerSeriesDataset(Dataset):
+    """
+    Thin wrapper around a dataset config entry, for the non-multivariate
+    (per-series) path. Unlike LazyDataset, length varies per entry (number
+    of series in it) rather than being a constant 1, so the first __len__
+    call forces a load — real laziness only kicks in for __getitem__ calls
+    after that. The underlying LazyDatasetCache still evicts by
+    max_cached_datasets across entries.
+    """
+    def __init__(self, entry, mcfg, cache: LazyDatasetCache):
+        self.entry = entry
+        self.mcfg  = mcfg
+        self.cache = cache
+
+    def __len__(self):
+        return len(self.cache.get(self.entry, self.mcfg).series)
+
+    def __getitem__(self, idx):
+        ds = self.cache.get(self.entry, self.mcfg)
+        return ds[idx]

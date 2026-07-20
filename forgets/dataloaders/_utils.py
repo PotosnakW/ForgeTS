@@ -110,6 +110,36 @@ def _pivot_to_arrays(
     return y, hist, futr, stat, channel_ids, available_mask, loss_mask
 
 
+def _series_arrays(
+    df: pd.DataFrame,
+    hist_exog_cols: List[str],
+    futr_exog_cols: List[str],
+    stat_exog_cols: List[str],
+) -> List[dict]:
+    """
+    Split a long-format frame into one independent array-set per unique_id.
+
+    Unlike _pivot_to_arrays, this never reindexes series onto a shared time
+    axis — these are independent univariate examples with unrelated native
+    timelines, not channels of one multivariate signal, so there's nothing
+    to align. Each series keeps its own native length; batching later pads
+    to a common length per-batch (see DataLoaderFactory._full_series_collate_fn).
+    """
+    df = df.sort_values(["unique_id", "ds"])
+    out = []
+    for uid, g in df.groupby("unique_id", sort=True):
+        out.append({
+            "channel_id":     uid,
+            "y":              g["y"].to_numpy(dtype=np.float32),
+            "hist":           g[hist_exog_cols].to_numpy(dtype=np.float32) if hist_exog_cols else np.zeros((len(g), 0), dtype=np.float32),
+            "futr":           g[futr_exog_cols].to_numpy(dtype=np.float32) if futr_exog_cols else np.zeros((len(g), 0), dtype=np.float32),
+            "stat":           g[stat_exog_cols].iloc[0].to_numpy(dtype=np.float32) if stat_exog_cols else np.zeros((0,), dtype=np.float32),
+            "available_mask": g["available_mask"].to_numpy(dtype=np.float32),
+            "loss_mask":      g["loss_mask"].to_numpy(dtype=np.float32),
+        })
+    return out
+
+
 def _extend_with_next_split(df: pd.DataFrame, next_df: pd.DataFrame, horizon: int) -> pd.DataFrame:
     """
     Append the first H-1 rows of next_df per series to df, with available_mask=0.

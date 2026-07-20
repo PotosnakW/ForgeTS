@@ -67,9 +67,17 @@ class ScaledDotProductAttention(nn.Module):
 
         attention_mask = attention_mask * channel_mask.view(-1, 1, 1, 1).float()
         attn_scores = attn_scores.masked_fill(attention_mask == 0, float('-inf'))
-        
+
         # Normalize attention weights
         attn_weights = F.softmax(attn_scores, dim=-1)
+        # A query position with zero valid keys (e.g. a left-padded position
+        # under causal masking, where every key <= it is also padding) gets
+        # an all -inf score row, and softmax(-inf, ..., -inf) is 0/0 = NaN.
+        # That row's own output is unused downstream (available_mask=0
+        # there), but leaving it NaN would poison any later valid query that
+        # assigns it exactly-zero attention weight too (0 * NaN is still
+        # NaN). Zero it instead — equivalent to attending nowhere.
+        attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
         attn_weights = self.attn_dropout(attn_weights)
         
         # Compute attention output

@@ -54,6 +54,7 @@ def main(cfg: DictConfig) -> None:
     )
     mcfg = OmegaConf.create(mcfg)
     mcfg.horizon_override = getattr(cfg.dataset, "horizon_override", None)
+    mcfg.context_len_override = getattr(cfg.dataset, "context_len_override", None)
     mcfg.n_channels = getattr(cfg.dataset, "n_channels", None)
     mcfg.checkpoint_dir = str(output_dir / "checkpoints")
     dcfg = OmegaConf.create(OmegaConf.to_container(cfg.dataset, resolve=True))

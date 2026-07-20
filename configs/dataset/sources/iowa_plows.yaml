@@ -1,6 +1,7 @@
 path: "/home/wpotosna/neuralforecast/mica/datasets/preprocessed_iowa_plows_dataset.csv"
 name: "iowa_plows"
 horizon: 24
+context_len: 12
 val_size: 500 #3744 #13 days (10% of data)
 test_size: 500 #3744 #13 days (10% of data)
 weight: 1.0

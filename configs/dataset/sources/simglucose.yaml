@@ -1,6 +1,7 @@
 path: "/home/wpotosna/neuralforecast/mica/datasets/simglucose_90_days.csv"
 name: "simglucose"
 horizon: 6
+context_len: 12
 val_size: 255 #2592
 test_size: 255 #2592
 weight: 1.0

@@ -1,6 +1,7 @@
 path: "/home/wpotosna/neuralforecast/mica/datasets/preprocessed_iowa_ihop_smex02_dataset.csv"
 name: "iowa_ihop_smex02"
 horizon: 24
+context_len: 12
 val_size: 2304 #8 days (10% of data)
 test_size: 2304 #8 days (10% of data)
 weight: 1.0

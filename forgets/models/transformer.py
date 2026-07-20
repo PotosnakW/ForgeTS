@@ -8,6 +8,7 @@ from ..input_layers._base_input_layer import BaseInputLayer
 from ..encoders._base_encoder import BaseEncoder
 from ..decoders._base_decoder import BaseDecoder
 from ..output_layers._base_output_layer import BaseOutputLayer
+from ..ensemble_layers._base_ensemble_layer import BaseEnsembleLayer
 
 
 class Model(nn.Module):
@@ -31,6 +32,8 @@ class Model(nn.Module):
         self.encoder = BaseEncoder().get_encoder(config=config)
         self.decoder = BaseDecoder().get_decoder(config=config)
         self.output_layer = BaseOutputLayer().get_output_layer(config=config)
+        self.ensemble_layer = BaseEnsembleLayer().get_ensemble_layer(config)
+        self.ensemble_level = getattr(config, "ensemble_level", "none")
     
     def forward(
         self,
@@ -78,6 +81,9 @@ class Model(nn.Module):
             channel_mask = channel_mask,
         )
 
+        if self.ensemble_level == 'embedding':
+            enc_out = self.ensemble_layer(enc_out)
+
             # get raw decoder output — either all at once, or chunked internally
         if self.decode_fcd_size == -1:
             dec_out = self._decode_full(enc_out, key_padding_mask, horizon)
@@ -88,6 +94,9 @@ class Model(nn.Module):
         output = self.output_layer(dec_out)
         output = output.reshape(batch_size, n_channels, fcd_samples, -1, self.c_out)
         output = output[:, :, :, :horizon, :]
+
+        if self.ensemble_level == 'output':
+            output = self.ensemble_layer(output)
 
         return output
 
